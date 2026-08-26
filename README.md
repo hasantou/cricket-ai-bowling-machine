@@ -16,11 +16,24 @@ docs/
   product/    Program plan and the MVP research & development plan
   business/   Business plan (UK Innovator Founder visa version)
   research/   Source notes on the competitive landscape and market
-cv-pipeline/       Pose estimation, ball tracking, shot-outcome classification
-adaptation-engine/ Mastery scoring + style-recommendation logic
+app/               The working MVP demo (Streamlit) — run this
+adaptation-engine/ Mastery scoring + style-recommendation logic (real, tested code)
+cv-pipeline/       Pose estimation, ball tracking, shot-outcome classification (not built yet)
 hardware/          Delivery-head and sensor integration work (later phase)
 data/              Session recordings and datasets (gitignored — not committed)
 ```
+
+## Run the MVP demo
+
+```
+pip install -r requirements.txt
+streamlit run app/app.py
+```
+
+Log a few deliveries against the same bowling style with good outcomes and
+watch it get flagged "mastered," then see the recommended next style
+appear — the actual adaptation logic, running. See `app/README.md` for
+what's real vs. still a placeholder in this build.
 
 ## Start here
 
@@ -47,8 +60,12 @@ programmable machine.
 
 ## Status
 
-Early stage — planning and MVP build. No production code yet; `cv-pipeline/`
-and `adaptation-engine/` are scaffolded and ready for the first commits.
+MVP demo working: the mastery-scoring and style-recommendation logic in
+`adaptation-engine/` is real, tested code (`pytest adaptation-engine/tests/`
+— 11 passing), wired into a runnable Streamlit app in `app/`. Computer
+vision (`cv-pipeline/`) and any machine hardware integration are not built
+yet — the demo uses human-entered delivery outcomes in their place, which
+is the deliberate Phase 1 scope (see the MVP plan).
 
 ## License / confidentiality
 

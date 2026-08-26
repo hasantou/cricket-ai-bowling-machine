@@ -40,3 +40,5 @@ wandb/
 .env.*
 *.pem
 *.key
+.pytest_cache/
+.streamlit/
