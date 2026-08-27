@@ -1,2 +1,5 @@
 streamlit>=1.38
 pytest>=8.0
+numpy>=1.23
+scikit-learn>=1.4
+joblib>=1.3
