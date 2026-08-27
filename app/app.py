@@ -15,13 +15,16 @@ Run with:  streamlit run app/app.py
 
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "adaptation-engine"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cv-pipeline"))
 
 import streamlit as st
 from scoring import MasteryScorer, OUTCOME_QUALITY, MASTERY_THRESHOLD, MIN_SAMPLE
 from recommender import recommend_next_styles, explain_recommendation
 from styles import STYLE_LIBRARY, STYLE_BY_KEY
+from video_pipeline import estimate_outcome_from_video
 
 st.set_page_config(page_title="AI-Adaptive Bowling Machine — MVP", page_icon="🏏", layout="wide")
 
@@ -53,10 +56,57 @@ with left:
         "Outcome", list(OUTCOME_QUALITY.keys()),
         horizontal=True, index=0,
     )
-    on_time = st.checkbox("Batter was on time", value=True)
-    footwork_correct = st.checkbox("Footwork was correct", value=True)
 
-    if st.button("Log delivery", type="primary"):
+    st.markdown("**Timing & footwork**")
+    input_mode = st.radio(
+        "How should timing/footwork be judged?",
+        ["Enter manually", "Estimate from a video clip"],
+        horizontal=True,
+    )
+
+    on_time, footwork_correct = True, True
+    vision_estimate = None
+    ready_to_log = True
+
+    if input_mode == "Enter manually":
+        on_time = st.checkbox("Batter was on time", value=True)
+        footwork_correct = st.checkbox("Footwork was correct", value=True)
+    else:
+        st.caption(
+            "Uploads a clip of this one delivery through cv-pipeline's pretrained "
+            "pose model. Estimates timing/footwork only — not the outcome above, which "
+            "still needs your judgement (see cv-pipeline/README.md for what this can "
+            "and can't do yet)."
+        )
+        clip = st.file_uploader("Delivery clip", type=["mp4", "mov", "avi", "mkv"])
+        ready_to_log = False
+        if clip is not None:
+            suffix = os.path.splitext(clip.name)[1]
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(clip.read())
+                tmp_path = tmp.name
+            try:
+                vision_estimate = estimate_outcome_from_video(tmp_path)
+                on_time = vision_estimate.on_time
+                footwork_correct = vision_estimate.footwork_correct
+                ready_to_log = True
+                st.success(
+                    f"Estimated from video — on time: {'yes' if on_time else 'no'}, "
+                    f"footwork correct: {'yes' if footwork_correct else 'no'}"
+                )
+                with st.expander("Raw features"):
+                    st.json(vision_estimate.features.__dict__)
+            except FileNotFoundError:
+                st.error(
+                    "Pose model not downloaded yet. Run "
+                    "`python cv-pipeline/pose_estimation.py` once, then retry."
+                )
+            except ValueError as e:
+                st.error(str(e))
+            finally:
+                os.unlink(tmp_path)
+
+    if st.button("Log delivery", type="primary", disabled=not ready_to_log):
         record = scorer.record_delivery(chosen_key, outcome, on_time, footwork_correct)
         st.session_state.log.append((chosen_key, outcome))
         st.session_state.recent_styles.append(chosen_key)
@@ -109,9 +159,14 @@ with st.expander("What's real here vs. what's a placeholder"):
         "- **Real, tested logic**: mastery scoring (`adaptation-engine/scoring.py`) and "
         "style recommendation (`adaptation-engine/recommender.py`) — both have passing "
         "unit tests in `adaptation-engine/tests/`.\n"
-        "- **Placeholder for this MVP, by design**: delivery outcomes are entered by a "
-        "human here instead of coming from a computer-vision pipeline watching the video "
-        "— see `cv-pipeline/README.md`. That's Phase 2, not Phase 1.\n"
+        "- **Real, working, but unvalidated**: uploading a delivery clip runs a genuine "
+        "pretrained pose model (`cv-pipeline/pose_estimation.py`) and feature extraction "
+        "(`cv-pipeline/feature_extraction.py`) to estimate timing/footwork automatically. "
+        "The estimate itself is a documented heuristic (`cv-pipeline/outcome_bridge.py`), "
+        "not a trained classifier, and has never been checked against a real coach's "
+        "judgement — see `cv-pipeline/README.md`.\n"
+        "- **Placeholder for this MVP, by design**: shot outcome (middled/edged/missed/...) "
+        "is always entered by a human — ball tracking against the bat isn't built.\n"
         "- **Not built yet**: any connection to an actual bowling machine. This app only "
         "recommends; a person still sets the real machine."
     )

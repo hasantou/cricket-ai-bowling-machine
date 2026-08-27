@@ -26,9 +26,6 @@ data/**
 *.mkv
 *.csv
 *.parquet
-# ...except tiny, deliberately-committed test fixtures (see data/README.md
-# and cv-pipeline/README.md: anything under a few MB is fine there)
-!cv-pipeline/tests/fixtures/*.mp4
 
 # ML artifacts
 *.pt
@@ -37,8 +34,8 @@ data/**
 *.h5
 *.ckpt
 wandb/
-# Pretrained third-party model downloads — reproducible via
-# cv-pipeline/pose/download_model.py, not committed
+# Pretrained third-party model download — reproducible via
+# cv-pipeline/pose_estimation.py's download_model(), not committed
 *.task
 
 # Secrets / local config
