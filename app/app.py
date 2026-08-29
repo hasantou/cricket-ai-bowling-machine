@@ -13,6 +13,8 @@ works and is usable, which is exactly what the MVP is scoped to test.
 Run with:  streamlit run app/app.py
 """
 
+import csv
+import io
 import os
 import sys
 import tempfile
@@ -22,26 +24,83 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cv-pipeline"))
 
 import streamlit as st
 from scoring import MasteryScorer, OUTCOME_QUALITY, MASTERY_THRESHOLD, MIN_SAMPLE
+from neural_scorer import NeuralMasteryScorer
 from recommender import recommend_next_styles, explain_recommendation
 from styles import STYLE_LIBRARY, STYLE_BY_KEY
 from video_pipeline import estimate_outcome_from_video
 
 st.set_page_config(page_title="AI-Adaptive Bowling Machine — MVP", page_icon="🏏", layout="wide")
 
+SCORER_ENGINES = ["Rule-based (EMA threshold)", "Neural (trained MLP)"]
+
+
+def _new_scorer(engine: str):
+    return NeuralMasteryScorer() if engine == "Neural (trained MLP)" else MasteryScorer()
+
+
+if "scorer_engine" not in st.session_state:
+    st.session_state.scorer_engine = SCORER_ENGINES[0]
 if "scorer" not in st.session_state:
-    st.session_state.scorer = MasteryScorer()
+    st.session_state.scorer = _new_scorer(st.session_state.scorer_engine)
 if "log" not in st.session_state:
     st.session_state.log = []  # list of (style_key, outcome) for display
 if "recent_styles" not in st.session_state:
     st.session_state.recent_styles = []
 
-scorer: MasteryScorer = st.session_state.scorer
+with st.sidebar:
+    st.header("Session settings")
+    chosen_engine = st.radio(
+        "Scoring engine", SCORER_ENGINES,
+        index=SCORER_ENGINES.index(st.session_state.scorer_engine),
+    )
+    st.caption(
+        "Neural scorer is a real trained model (`adaptation-engine/neural_scorer.py`, "
+        "held-out AUC ~0.96) — but trained entirely on simulated batters, never a real "
+        "player (see `adaptation-engine/simulator.py`). Switching engines starts a "
+        "fresh session rather than comparing mid-session."
+    )
+    if chosen_engine != st.session_state.scorer_engine:
+        try:
+            new_scorer = _new_scorer(chosen_engine)
+        except FileNotFoundError:
+            st.error(
+                "Neural scorer model not found. Run "
+                "`python adaptation-engine/neural_scorer.py` once to train and save it, "
+                "then retry."
+            )
+        else:
+            st.session_state.scorer = new_scorer
+            st.session_state.scorer_engine = chosen_engine
+            st.session_state.log = []
+            st.session_state.recent_styles = []
+            st.rerun()
+
+    if st.button("Reset session"):
+        st.session_state.scorer = _new_scorer(st.session_state.scorer_engine)
+        st.session_state.log = []
+        st.session_state.recent_styles = []
+        st.rerun()
+
+    if st.session_state.log:
+        st.divider()
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["ball_number", "style_key", "style_label", "outcome"])
+        for i, (key, outcome_) in enumerate(st.session_state.log, 1):
+            writer.writerow([i, key, STYLE_BY_KEY[key].label, outcome_])
+        st.download_button(
+            "Download session log (CSV)", buf.getvalue(),
+            file_name="session_log.csv", mime="text/csv",
+        )
+
+scorer = st.session_state.scorer
 
 st.title("🏏 AI-Adaptive Bowling Machine — MVP")
 st.caption(
     "Human-in-the-loop prototype. Log what happened on each ball; the engine tracks "
     "mastery per style and recommends a genuinely different one the moment a pattern "
-    "is solved — you then set that on the machine yourself."
+    "is solved — you then set that on the machine yourself. "
+    f"Scoring engine: **{st.session_state.scorer_engine}** (change in the sidebar)."
 )
 
 left, right = st.columns([1, 1.4])
@@ -156,9 +215,13 @@ with right:
 st.divider()
 with st.expander("What's real here vs. what's a placeholder"):
     st.markdown(
-        "- **Real, tested logic**: mastery scoring (`adaptation-engine/scoring.py`) and "
-        "style recommendation (`adaptation-engine/recommender.py`) — both have passing "
-        "unit tests in `adaptation-engine/tests/`.\n"
+        "- **Real, tested logic**: mastery scoring (`adaptation-engine/scoring.py`), "
+        "the neural alternative (`adaptation-engine/neural_scorer.py`, switchable in "
+        "the sidebar), and style recommendation (`adaptation-engine/recommender.py`) — "
+        "all have passing unit tests in `adaptation-engine/tests/`.\n"
+        "- **Real, but never validated on a real player**: the neural scorer is trained "
+        "entirely on `adaptation-engine/simulator.py`'s virtual batters — held-out AUC "
+        "~0.96 there, but that's a simulated ground truth, not a real coach's judgement.\n"
         "- **Real, working, but unvalidated**: uploading a delivery clip runs a genuine "
         "pretrained pose model (`cv-pipeline/pose_estimation.py`) and feature extraction "
         "(`cv-pipeline/feature_extraction.py`) to estimate timing/footwork automatically. "
