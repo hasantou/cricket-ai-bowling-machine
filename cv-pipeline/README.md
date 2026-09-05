@@ -30,21 +30,30 @@ filled in automatically instead of a human ticking checkboxes each ball.
   real footage yet to train one on honestly. It does **not** attempt shot
   outcome (middled/edged/missed/...) — that needs ball tracking against
   the bat, which isn't built.
-- **`delivery_segmentation.py`** — finds the single delivery inside a
-  longer clip. Added after running real WhatsApp footage (6-71 second
-  clips of a nets session) through this pipeline for the first time:
+- **`delivery_segmentation.py`** — finds every delivery inside a longer
+  clip. Added after running real WhatsApp footage (6-71 second clips of a
+  nets session) through this pipeline for the first time:
   `feature_extraction.py`'s math assumes a clip *is* one delivery, and on
   real footage that's false — front-foot displacement over 71 seconds of
   walking between balls produced numbers that didn't mean anything. This
-  module reuses the same leading-wrist swing-speed signal to find where
-  the clearest swing happens and windows a fixed span around it before
-  the existing feature math runs. Picks one delivery per clip (the
-  clearest swing) — a clip with several deliveries back-to-back still
-  only scores one of them.
-- **`video_pipeline.py`** — wires the above into one call,
-  `estimate_outcome_from_video(path)`: video file in, `(on_time,
-  footwork_correct)` out. **Wired into `app/app.py`** — the "Estimate
-  from a video clip" mode there calls this directly.
+  module reuses the same leading-wrist swing-speed signal, greedily
+  picking the strongest remaining peak and suppressing a window around it
+  (so one swing's rise-and-fall isn't double-counted) until nothing above
+  threshold remains. Run against the same 5 real clips: **26 deliveries
+  detected in total** (2 to 8 per clip) — mechanically working and
+  plausible for nets-session rotation speed, but nobody has watched the
+  footage to confirm each detection is a genuine batting swing and not,
+  say, a stray arm movement. `find_delivery_window()` (singular) is kept
+  for callers that only want the single clearest one.
+- **`video_pipeline.py`** — `estimate_outcomes_from_video(path)` (plural)
+  wires the above into one call: video file in, one `(on_time,
+  footwork_correct)` result per detected delivery out.
+  `estimate_outcome_from_video()` (singular) wraps it for the clearest
+  delivery only. **Wired into `app/app.py`** — the "Estimate from a video
+  clip" mode calls the plural version and lets you pick which detected
+  delivery the current log entry applies to, rather than silently
+  discarding everything but the single clearest one from an uploaded
+  session.
 
 ### `on_time`'s first version was broken — found and fixed against real footage
 
@@ -77,8 +86,9 @@ constant.
 - Any validation of `on_time`/`footwork_correct` against a real coach's
   independent verdict — everything so far confirms the pipeline measures
   *something* real and non-tautological, not that the something is right.
-- Splitting a multi-delivery clip into every delivery in it, rather than
-  just the single clearest one.
+- Confirmation that multi-delivery detection's 26-out-of-5-clips count is
+  actually correct — nobody has watched the source footage ball-by-ball
+  to check against it.
 
 ## Once real data exists
 
@@ -98,8 +108,8 @@ constant.
 
 ```
 python cv-pipeline/pose_estimation.py          # one-time: downloads the pretrained model
-python -c "from video_pipeline import estimate_outcome_from_video; \
-           print(estimate_outcome_from_video('path/to/delivery_clip.mp4'))"
+python -c "from video_pipeline import estimate_outcomes_from_video; \
+           print(estimate_outcomes_from_video('path/to/clip.mp4'))"  # a whole session works, not just one ball
 ```
 
 ## Tests
@@ -108,8 +118,10 @@ python -c "from video_pipeline import estimate_outcome_from_video; \
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-21 tests: feature-extraction math (including `footwork_lead_seconds`) and
-delivery-segmentation windowing against synthetic landmark sequences, the
+26 tests: feature-extraction math (including `footwork_lead_seconds`) and
+delivery-segmentation windowing — single and multi-delivery, including
+that close-together swings merge into one delivery rather than
+double-counting — against synthetic landmark sequences, the
 outcome-bridge heuristic's branches, and checks that `PoseEstimator` fails
 loudly and helpfully (not silently) when the model hasn't been downloaded,
 and that one instance can process multiple clips in sequence without

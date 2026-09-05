@@ -27,7 +27,7 @@ from scoring import MasteryScorer, OUTCOME_QUALITY, MASTERY_THRESHOLD, MIN_SAMPL
 from neural_scorer import NeuralMasteryScorer
 from recommender import recommend_next_styles, explain_recommendation
 from styles import STYLE_LIBRARY, STYLE_BY_KEY
-from video_pipeline import estimate_outcome_from_video
+from video_pipeline import estimate_outcomes_from_video
 
 st.set_page_config(page_title="AI-Adaptive Bowling Machine — MVP", page_icon="🏏", layout="wide")
 
@@ -36,6 +36,21 @@ SCORER_ENGINES = ["Rule-based (EMA threshold)", "Neural (trained MLP)"]
 
 def _new_scorer(engine: str):
     return NeuralMasteryScorer() if engine == "Neural (trained MLP)" else MasteryScorer()
+
+
+@st.cache_data(show_spinner="Running pose estimation on the clip...")
+def _analyse_clip(video_bytes: bytes, suffix: str):
+    """Cached on the uploaded file's bytes so re-running the app (e.g. the
+    user picking a different delivery from the dropdown below) doesn't
+    re-run pose estimation on the whole clip every time — that's real
+    compute, not free, especially on a multi-minute session clip."""
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(video_bytes)
+        tmp_path = tmp.name
+    try:
+        return estimate_outcomes_from_video(tmp_path)
+    finally:
+        os.unlink(tmp_path)
 
 
 if "scorer_engine" not in st.session_state:
@@ -132,38 +147,49 @@ with left:
         footwork_correct = st.checkbox("Footwork was correct", value=True)
     else:
         st.caption(
-            "Uploads a clip of this one delivery through cv-pipeline's pretrained "
-            "pose model. Estimates timing/footwork only — not the outcome above, which "
-            "still needs your judgement (see cv-pipeline/README.md for what this can "
-            "and can't do yet)."
+            "Uploads a clip through cv-pipeline's pretrained pose model — a whole nets "
+            "session works, not just one pre-trimmed ball; delivery_segmentation.py finds "
+            "every delivery in it automatically. Estimates timing/footwork only — not the "
+            "outcome above, which still needs your judgement (see cv-pipeline/README.md "
+            "for what this can and can't do yet)."
         )
-        clip = st.file_uploader("Delivery clip", type=["mp4", "mov", "avi", "mkv"])
+        clip = st.file_uploader("Delivery clip (one ball or a whole session)", type=["mp4", "mov", "avi", "mkv"])
         ready_to_log = False
         if clip is not None:
             suffix = os.path.splitext(clip.name)[1]
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(clip.read())
-                tmp_path = tmp.name
             try:
-                vision_estimate = estimate_outcome_from_video(tmp_path)
-                on_time = vision_estimate.on_time
-                footwork_correct = vision_estimate.footwork_correct
-                ready_to_log = True
-                st.success(
-                    f"Estimated from video — on time: {'yes' if on_time else 'no'}, "
-                    f"footwork correct: {'yes' if footwork_correct else 'no'}"
-                )
-                with st.expander("Raw features"):
-                    st.json(vision_estimate.features.__dict__)
+                vision_estimates = _analyse_clip(clip.getvalue(), suffix)
             except FileNotFoundError:
                 st.error(
                     "Pose model not downloaded yet. Run "
                     "`python cv-pipeline/pose_estimation.py` once, then retry."
                 )
+                vision_estimates = None
             except ValueError as e:
                 st.error(str(e))
-            finally:
-                os.unlink(tmp_path)
+                vision_estimates = None
+
+            if vision_estimates:
+                n = len(vision_estimates)
+                st.success(f"Detected {n} deliver{'y' if n == 1 else 'ies'} in this clip.")
+                if n > 1:
+                    idx = st.selectbox(
+                        "Which detected delivery does this log entry apply to?",
+                        options=list(range(n)),
+                        format_func=lambda i: (
+                            f"Delivery {i + 1} — on time: "
+                            f"{'yes' if vision_estimates[i].on_time else 'no'}, footwork: "
+                            f"{'correct' if vision_estimates[i].footwork_correct else 'incorrect'}"
+                        ),
+                    )
+                else:
+                    idx = 0
+                vision_estimate = vision_estimates[idx]
+                on_time = vision_estimate.on_time
+                footwork_correct = vision_estimate.footwork_correct
+                ready_to_log = True
+                with st.expander("Raw features for this delivery"):
+                    st.json(vision_estimate.features.__dict__)
 
     if st.button("Log delivery", type="primary", disabled=not ready_to_log):
         record = scorer.record_delivery(chosen_key, outcome, on_time, footwork_correct)
@@ -222,16 +248,18 @@ with st.expander("What's real here vs. what's a placeholder"):
         "- **Real, but never validated on a real player**: the neural scorer is trained "
         "entirely on `adaptation-engine/simulator.py`'s virtual batters — held-out AUC "
         "~0.96 there, but that's a simulated ground truth, not a real coach's judgement.\n"
-        "- **Real, tested against actual footage, still unvalidated**: uploading a delivery "
-        "clip runs a genuine pretrained pose model (`cv-pipeline/pose_estimation.py`), "
-        "automatic delivery-window detection (`cv-pipeline/delivery_segmentation.py`) so "
-        "you don't need to pre-trim clips yourself, and feature extraction "
-        "(`cv-pipeline/feature_extraction.py`). Run against 5 real WhatsApp clips, both "
-        "footwork and timing (`on_time`, via `footwork_lead_seconds`) now discriminate "
-        "meaningfully across clips instead of one heuristic being structurally stuck on a "
-        "single answer (an earlier bug — see `cv-pipeline/README.md`). That confirms the "
-        "pipeline measures *something* real, not that the something is *correct* — no "
-        "real coach's independent verdict has checked these numbers yet.\n"
+        "- **Real, tested against actual footage, still unvalidated**: uploading a clip "
+        "runs a genuine pretrained pose model (`cv-pipeline/pose_estimation.py`) and "
+        "automatic delivery detection (`cv-pipeline/delivery_segmentation.py`) — a whole "
+        "nets session works, not just one pre-trimmed ball; pick which detected delivery "
+        "above this log entry applies to. Run against 5 real WhatsApp clips: 26 "
+        "deliveries detected across them, and both footwork and timing "
+        "(`on_time`, via `footwork_lead_seconds`) discriminate meaningfully instead of "
+        "one heuristic being structurally stuck on a single answer (an earlier bug — see "
+        "`cv-pipeline/README.md`). That confirms the pipeline measures *something* real, "
+        "not that the something is *correct* — nobody has watched the source footage to "
+        "confirm the 26 detections are all genuine swings, and no coach's independent "
+        "verdict has checked the on_time/footwork numbers yet.\n"
         "- **Placeholder for this MVP, by design**: shot outcome (middled/edged/missed/...) "
         "is always entered by a human — ball tracking against the bat isn't built.\n"
         "- **Not built yet**: any connection to an actual bowling machine. This app only "
