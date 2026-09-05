@@ -34,9 +34,14 @@ data/**
 *.h5
 *.ckpt
 wandb/
-# Pretrained third-party model download — reproducible via
-# cv-pipeline/pose_estimation.py's download_model(), not committed
-*.task
+# Note: pretrained model files (e.g. adaptation-engine/models/*.joblib,
+# cv-pipeline/models/*.task) are deliberately NOT ignored — Streamlit
+# Cloud only clones this repo and runs pip install; there's no deploy
+# step that would call download_model() or train() for it, so an
+# ignored model file means the deployed app silently can't load it.
+# Found the hard way: cv-pipeline's model was ignored here, and every
+# video upload on the live deployed app failed with "model not
+# downloaded" until this rule was removed and the file committed.
 
 # Secrets / local config
 .env
