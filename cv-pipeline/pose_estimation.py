@@ -55,6 +55,17 @@ class PoseEstimator:
             running_mode=mp_vision.RunningMode.VIDEO,
         )
         self._landmarker = mp_vision.PoseLandmarker.create_from_options(options)
+        # MediaPipe's VIDEO mode enforces strictly increasing timestamps for
+        # the lifetime of one landmarker instance — not just within a single
+        # clip. Without this offset, a second call to
+        # extract_landmarks_from_frames() (a second video processed by the
+        # same, reused PoseEstimator) starts its timestamps back at 0 and
+        # MediaPipe raises "Input timestamp must be monotonically
+        # increasing." Tracking the last timestamp used lets one instance
+        # process many clips in sequence — the realistic case for a coaching
+        # session logging several deliveries without reloading the model
+        # each time — while a single clip still starts at timestamp 0 as before.
+        self._next_timestamp_ms = 0
 
     def extract_landmarks_from_frames(self, frames_bgr, fps: float) -> List[FrameLandmarks]:
         """frames_bgr: list of HxWx3 uint8 numpy arrays, as read by
@@ -63,11 +74,13 @@ class PoseEstimator:
         skipped outright rather than padded with fabricated zeros, so
         downstream feature math never sees a fake detection."""
         results = []
+        base_ms = self._next_timestamp_ms
         for i, frame in enumerate(frames_bgr):
             rgb = np.ascontiguousarray(frame[:, :, ::-1])
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            timestamp_ms = int(i * (1000.0 / fps))
+            timestamp_ms = base_ms + int(i * (1000.0 / fps))
             result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
+            self._next_timestamp_ms = timestamp_ms + 1
             if result.pose_landmarks:
                 landmarks = [(lm.x, lm.y, lm.visibility) for lm in result.pose_landmarks[0]]
                 results.append(landmarks)

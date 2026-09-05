@@ -30,19 +30,39 @@ filled in automatically instead of a human ticking checkboxes each ball.
   real footage yet to train one on honestly. It does **not** attempt shot
   outcome (middled/edged/missed/...) — that needs ball tracking against
   the bat, which isn't built.
-- **`video_pipeline.py`** — wires the three above into one call,
+- **`delivery_segmentation.py`** — finds the single delivery inside a
+  longer clip. Added after running real WhatsApp footage (6-71 second
+  clips of a nets session) through this pipeline for the first time:
+  `feature_extraction.py`'s math assumes a clip *is* one delivery, and on
+  real footage that's false — front-foot displacement over 71 seconds of
+  walking between balls, or an "on time" check against a session's length
+  instead of one ball's, produced numbers that didn't mean anything.
+  This module reuses the same leading-wrist swing-speed signal to find
+  where the clearest swing happens and windows a fixed span around it
+  before the existing feature math runs. **Real limitation, found the
+  same way**: because the window is built symmetric *around* the swing
+  peak, and `outcome_bridge.py`'s `on_time` check asks whether the swing
+  starts early *within that same window*, the two are circular by
+  construction — the window's existence already guarantees an early-looking
+  swing start. Concretely: all 5 real clips tested read `on_time: true`,
+  which is a red flag, not a good sign, until `on_time` is reworked to use
+  a timing reference independent of the window it's measured inside.
+  Picks one delivery per clip (the clearest swing) — a clip with several
+  deliveries back-to-back still only scores one of them.
+- **`video_pipeline.py`** — wires the above into one call,
   `estimate_outcome_from_video(path)`: video file in, `(on_time,
-  footwork_correct)` out.
+  footwork_correct)` out. **Wired into `app/app.py`** — the "Estimate
+  from a video clip" mode there calls this directly.
 
 ## What isn't built yet
 
 - Ball tracking (release point, trajectory, pitch location, deviation).
 - Bat-ball contact analysis / shot-outcome classification — this still
   needs a human, same as today's app.
-- Any wiring of this pipeline into `app/app.py` itself — right now it's
-  a standalone module you can run against a video file from the command
-  line or a script; hooking up an "upload a clip" mode in the app is the
-  next step once there's real footage to test it against.
+- A trustworthy `on_time` signal — see `delivery_segmentation.py` above;
+  the current one is confounded by its own windowing method.
+- Splitting a multi-delivery clip into every delivery in it, rather than
+  just the single clearest one.
 
 ## Once real data exists
 
@@ -72,7 +92,10 @@ python -c "from video_pipeline import estimate_outcome_from_video; \
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-11 tests: feature-extraction math against synthetic landmark sequences,
-the outcome-bridge heuristic's branches, and a check that `PoseEstimator`
-fails loudly and helpfully (not silently) when the model hasn't been
-downloaded yet.
+17 tests: feature-extraction math and delivery-segmentation windowing
+against synthetic landmark sequences, the outcome-bridge heuristic's
+branches, and checks that `PoseEstimator` fails loudly and helpfully (not
+silently) when the model hasn't been downloaded, and that one instance
+can process multiple clips in sequence without MediaPipe's video-timestamp
+error (a real bug found and fixed by running actual WhatsApp footage
+through this pipeline — see git history).
