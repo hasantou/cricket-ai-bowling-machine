@@ -24,9 +24,19 @@ from typing import List, Tuple
 from feature_extraction import DeliveryFeatures, FrameLandmarks, extract_delivery_features
 
 # Named, adjustable thresholds — not hidden magic numbers.
-MIN_FOOTWORK_DISPLACEMENT = 0.04     # normalised units; below this reads as "didn't move the feet"
-MAX_BALANCED_KNEE_BEND_DEG = 165     # a fully locked-straight knee (~180) reads as poor balance
-LATE_SWING_START_FRAME_RATIO = 0.75  # swing starting in the last quarter of the clip reads as late
+MIN_FOOTWORK_DISPLACEMENT = 0.04    # normalised units; below this reads as "didn't move the feet"
+MAX_BALANCED_KNEE_BEND_DEG = 165    # a fully locked-straight knee (~180) reads as poor balance
+MIN_FOOTWORK_LEAD_SECONDS = 0.05    # feet should start moving at least this long before the swing peak
+# Previously: comparing swing_start_frame against a fraction of the
+# clip's own length (features.n_frames). Real footage exposed that as
+# circular once delivery_segmentation.py started building windows
+# centred on the swing itself — the window's construction already
+# guaranteed an "early" swing start relative to its own boundaries, so
+# every real clip tested read on_time=True regardless of the actual
+# delivery. footwork_lead_seconds (feature_extraction.py) compares two
+# independently-measured events (when the feet start moving vs. when the
+# swing peaks) instead, in real seconds rather than a fraction of
+# whatever window it happens to be measured inside.
 
 
 @dataclass
@@ -41,8 +51,7 @@ def heuristic_bridge(features: DeliveryFeatures) -> Tuple[bool, bool]:
         features.front_foot_displacement >= MIN_FOOTWORK_DISPLACEMENT
         and features.front_knee_bend_deg <= MAX_BALANCED_KNEE_BEND_DEG
     )
-    late_threshold_frame = features.n_frames * LATE_SWING_START_FRAME_RATIO
-    on_time = features.swing_start_frame <= late_threshold_frame
+    on_time = features.footwork_lead_seconds >= MIN_FOOTWORK_LEAD_SECONDS
     return on_time, footwork_correct
 
 
@@ -54,7 +63,7 @@ class VisionOutcomeEstimator:
     and footwork only, the two signals scoring.py already consumes
     alongside a human-entered outcome."""
 
-    def estimate(self, frames: List[FrameLandmarks]) -> VisionOutcomeEstimate:
-        features = extract_delivery_features(frames)
+    def estimate(self, frames: List[FrameLandmarks], fps: float = 30.0) -> VisionOutcomeEstimate:
+        features = extract_delivery_features(frames, fps=fps)
         on_time, footwork_correct = heuristic_bridge(features)
         return VisionOutcomeEstimate(on_time=on_time, footwork_correct=footwork_correct, features=features)

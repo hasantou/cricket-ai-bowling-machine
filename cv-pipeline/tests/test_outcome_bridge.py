@@ -7,12 +7,14 @@ from feature_extraction import DeliveryFeatures
 from outcome_bridge import VisionOutcomeEstimator, heuristic_bridge
 
 
-def test_good_footwork_and_early_swing_reads_as_on_time_and_correct():
+def test_good_footwork_and_early_footwork_lead_reads_as_on_time_and_correct():
     features = DeliveryFeatures(
         front_foot_displacement=0.10,
         front_knee_bend_deg=140,
         swing_peak_speed=0.15,
-        swing_start_frame=2,
+        swing_start_frame=5,
+        footwork_start_frame=2,
+        footwork_lead_seconds=0.10,  # feet moved well before the swing
         n_frames=10,
     )
     on_time, footwork_correct = heuristic_bridge(features)
@@ -26,18 +28,42 @@ def test_no_foot_movement_reads_as_incorrect_footwork():
         front_knee_bend_deg=178,
         swing_peak_speed=0.15,
         swing_start_frame=2,
+        footwork_start_frame=9,
+        footwork_lead_seconds=-0.23,
         n_frames=10,
     )
     _, footwork_correct = heuristic_bridge(features)
     assert footwork_correct is False
 
 
-def test_late_swing_start_reads_as_not_on_time():
+def test_feet_moving_after_the_swing_reads_as_not_on_time():
+    # Real finding, not a hypothetical: the previous version of this
+    # heuristic compared swing timing against the clip's own length,
+    # which delivery_segmentation.py's peak-centred windowing made
+    # circular — every real clip tested read on_time=True regardless of
+    # the delivery. footwork_lead_seconds compares two independently
+    # measured events instead, so a genuinely late reaction can fail.
     features = DeliveryFeatures(
         front_foot_displacement=0.10,
         front_knee_bend_deg=140,
         swing_peak_speed=0.15,
-        swing_start_frame=9,  # in the last quarter of a 10-frame clip
+        swing_start_frame=2,
+        footwork_start_frame=6,
+        footwork_lead_seconds=-0.13,  # feet moved after the swing already started
+        n_frames=10,
+    )
+    on_time, _ = heuristic_bridge(features)
+    assert on_time is False
+
+
+def test_footwork_lead_below_the_minimum_reads_as_not_on_time():
+    features = DeliveryFeatures(
+        front_foot_displacement=0.10,
+        front_knee_bend_deg=140,
+        swing_peak_speed=0.15,
+        swing_start_frame=5,
+        footwork_start_frame=4,
+        footwork_lead_seconds=0.01,  # feet moved first, but barely — below MIN_FOOTWORK_LEAD_SECONDS
         n_frames=10,
     )
     on_time, _ = heuristic_bridge(features)

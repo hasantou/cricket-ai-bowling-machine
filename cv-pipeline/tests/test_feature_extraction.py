@@ -9,6 +9,8 @@ from feature_extraction import (
     extract_delivery_features,
 )
 
+FPS = 30.0
+
 N_LANDMARKS = 33
 
 
@@ -83,3 +85,56 @@ def test_bent_knee_reads_as_smaller_angle_than_straight_knee():
 def test_requires_at_least_one_frame():
     with pytest.raises(ValueError):
         extract_delivery_features([])
+
+
+def test_footwork_lead_is_positive_when_feet_move_before_the_swing():
+    frames = [_blank_frame() for _ in range(5)]  # everything still
+    for i in range(5):  # feet start moving here
+        f = _blank_frame()
+        f = _set(f, LEFT_FOOT_INDEX, 0.5 + i * 0.05, 0.5)
+        frames.append(f)
+    for i in range(5):  # swing starts later
+        f = _blank_frame()
+        f = _set(f, LEFT_FOOT_INDEX, 0.75, 0.5)
+        f = _set(f, LEFT_WRIST, 0.5 + i * 0.1, 0.5)
+        frames.append(f)
+
+    features = extract_delivery_features(frames, fps=FPS)
+    assert features.footwork_start_frame < features.swing_start_frame
+    assert features.footwork_lead_seconds > 0
+
+
+def test_footwork_lead_is_negative_when_feet_move_after_the_swing():
+    frames = [_blank_frame() for _ in range(5)]
+    for i in range(5):  # swing starts first
+        f = _blank_frame()
+        f = _set(f, LEFT_WRIST, 0.5 + i * 0.1, 0.5)
+        frames.append(f)
+    for i in range(5):  # feet only start moving after the swing is already underway
+        f = _blank_frame()
+        f = _set(f, LEFT_WRIST, 0.9, 0.5)
+        f = _set(f, LEFT_FOOT_INDEX, 0.5 + i * 0.05, 0.5)
+        frames.append(f)
+
+    features = extract_delivery_features(frames, fps=FPS)
+    assert features.swing_start_frame < features.footwork_start_frame
+    assert features.footwork_lead_seconds < 0
+
+
+def test_footwork_lead_seconds_scales_with_fps():
+    frames = [_blank_frame() for _ in range(3)]
+    for i in range(3):
+        f = _blank_frame()
+        f = _set(f, LEFT_FOOT_INDEX, 0.5 + i * 0.05, 0.5)
+        frames.append(f)
+    for i in range(3):
+        f = _blank_frame()
+        f = _set(f, LEFT_FOOT_INDEX, 0.65, 0.5)
+        f = _set(f, LEFT_WRIST, 0.5 + i * 0.1, 0.5)
+        frames.append(f)
+
+    slow_fps = extract_delivery_features(frames, fps=15.0)
+    fast_fps = extract_delivery_features(frames, fps=60.0)
+    # Same frame gap, but a lower fps means each frame spans more real
+    # time — the lead in seconds should be proportionally larger.
+    assert slow_fps.footwork_lead_seconds > fast_fps.footwork_lead_seconds > 0

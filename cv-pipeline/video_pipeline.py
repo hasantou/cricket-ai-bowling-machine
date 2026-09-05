@@ -51,7 +51,7 @@ def estimate_outcome_from_video(video_path: str, estimator: PoseEstimator = None
                 "shows a batter in frame, or that the model downloaded correctly."
             )
         start, end = find_delivery_window(landmarks, fps)
-        return VisionOutcomeEstimator().estimate(landmarks[start:end])
+        return VisionOutcomeEstimator().estimate(landmarks[start:end], fps=fps)
     finally:
         if owns_estimator:
             estimator.close()
