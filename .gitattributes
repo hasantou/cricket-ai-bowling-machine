@@ -1,0 +1,12 @@
+# Force these as binary — no line-ending conversion, ever. Without this,
+# git's line-ending handling on Windows can warn about (and in some
+# configurations alter) bytes inside files that only look text-ish to its
+# heuristic but are structurally binary underneath (PDF, docx, model
+# weights, images).
+*.pdf -text
+*.docx -text
+*.joblib -text
+*.task -text
+*.png -text
+*.jpg -text
+*.jpeg -text
