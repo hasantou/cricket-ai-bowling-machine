@@ -21,6 +21,14 @@ from .adaptive import (
     next_delivery_after,
     OUTCOME_SCORES,
 )
+from .scorecard import (
+    Scorecard,
+    BallRecord,
+    ScoringInfo,
+    DEFAULT_SCORING,
+    score_outcome,
+    classify_delivery_legality,
+)
 
 __all__ = [
     "BallProperties",
@@ -35,4 +43,10 @@ __all__ = [
     "suggest_next_delivery",
     "next_delivery_after",
     "OUTCOME_SCORES",
+    "Scorecard",
+    "BallRecord",
+    "ScoringInfo",
+    "DEFAULT_SCORING",
+    "score_outcome",
+    "classify_delivery_legality",
 ]

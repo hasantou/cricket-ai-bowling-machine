@@ -20,9 +20,11 @@ cricket_bowling_machine/
 │   ├── dynamics.py            sums gravity + drag + Magnus + swing + seam-drag into one acceleration
 │   ├── simulate.py            numerically integrates one delivery into a full trajectory
 │   ├── machine.py             twin-wheel machine <-> ball release state, forward and inverse
-│   └── adaptive.py            player rating, delivery difficulty rating, next-delivery selection
+│   ├── adaptive.py            player rating, delivery difficulty rating, next-delivery selection
+│   └── scorecard.py           the bridge: turns a bowled delivery + reported outcome into a scorecard
 ├── demo.py                    quickstart: one delivery, through the whole pipeline
 ├── demo_adaptive.py           a longer synthetic 70-ball adaptive session, with a chart
+├── demo_scorecard.py          full loop: bowl -> legality check -> outcome -> scorecard -> next delivery
 ├── docs/
 │   ├── cricket_ball_physics_report.pdf     the physics, equations, and algorithm in full
 │   ├── cricket_adaptive_difficulty.pdf     the adaptive-difficulty layer explained
@@ -101,6 +103,32 @@ Outcomes are one of `"missed"`, `"beaten"`, `"edged"`, `"defended"`,
 `"controlled"`, `"boundary"`, `"six"` (see `adaptive.OUTCOME_SCORES`), or any
 raw float from 0 to 1 if you want a finer-grained scoring scheme — e.g. from
 an automated vision/sensor system instead of a person reporting it.
+
+**4. Turn it into an actual scorecard.** `scorecard.py` is the bridge between
+a bowled ball and a real scorecard entry. It needs no sensor for legality —
+`classify_delivery_legality()` computes wide/no-ball directly from the
+delivery's own simulated trajectory, since the machine already knows exactly
+what it told the ball to do. It does need a reported outcome for anything
+else (runs, wickets) — that information only exists on the batter's side of
+the ball, so a person (or eventually a vision/sensor system) has to supply
+it, same as step 3 above.
+
+```python
+from cricket_trajectory import Scorecard, classify_delivery_legality
+
+card = Scorecard(batter_name="Player 1")
+result = run_simulation(ball, env, delivery)
+
+if classify_delivery_legality(result) is None:      # a fair delivery
+    card.record_ball(profile, ball, delivery, result, outcome="controlled")
+else:                                                 # wide or no-ball
+    card.record_ball(profile, ball, delivery, result)
+
+print(card.render_text())
+```
+
+See `demo_scorecard.py` for the full loop: bowl, check legality, score the
+outcome, update the player's adaptive rating, ask for the next delivery, repeat.
 
 ## Persisting a player's progress
 
