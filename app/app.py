@@ -212,11 +212,6 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
         chosen_label = st.selectbox("Style bowled", list(style_options.keys()))
         chosen_key = style_options[chosen_label]
 
-        outcome = st.radio(
-            "Outcome", list(OUTCOME_QUALITY.keys()),
-            horizontal=True, index=0,
-        )
-
         st.markdown("**Timing & footwork**")
         input_mode = st.radio(
             "How should timing/footwork be judged?",
@@ -224,23 +219,31 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
             horizontal=True,
         )
 
-        on_time, footwork_correct = True, True
-        vision_estimate = None
-        ready_to_log = True
-
         if input_mode == "Enter manually":
+            outcome = st.radio(
+                "Outcome", list(OUTCOME_QUALITY.keys()),
+                horizontal=True, index=0,
+            )
             on_time = st.checkbox("Batter was on time", value=True)
             footwork_correct = st.checkbox("Footwork was correct", value=True)
+
+            if st.button("Log delivery", type="primary"):
+                scorer.record_delivery(chosen_key, outcome, on_time, footwork_correct)
+                st.session_state.log.append((chosen_key, outcome))
+                st.session_state.recent_styles.append(chosen_key)
+                st.session_state.recent_styles = st.session_state.recent_styles[-2:]
+                st.rerun()
         else:
             st.caption(
                 "Uploads a clip through cv-pipeline's pretrained pose model — a whole nets "
                 "session works, not just one pre-trimmed ball; delivery_segmentation.py finds "
-                "every delivery in it automatically. Estimates timing/footwork only — not the "
-                "outcome above, which still needs your judgement (see cv-pipeline/README.md "
-                "for what this can and can't do yet)."
+                "every delivery in it automatically and estimates timing/footwork for each one. "
+                "Outcome still needs your judgement per ball (see cv-pipeline/README.md for "
+                "what this can and can't do yet) — set it below for each detected delivery, "
+                "then log them all in one go."
             )
             clip = st.file_uploader("Delivery clip (one ball or a whole session)", type=["mp4", "mov", "avi", "mkv"])
-            ready_to_log = False
+            vision_estimates = None
             if clip is not None:
                 suffix = os.path.splitext(clip.name)[1]
                 try:
@@ -250,39 +253,42 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                         "Pose model not downloaded yet. Run "
                         "`python cv-pipeline/pose_estimation.py` once, then retry."
                     )
-                    vision_estimates = None
                 except ValueError as e:
                     st.error(str(e))
-                    vision_estimates = None
 
-                if vision_estimates:
-                    n = len(vision_estimates)
-                    st.success(f"Detected {n} deliver{'y' if n == 1 else 'ies'} in this clip.")
-                    if n > 1:
-                        idx = st.selectbox(
-                            "Which detected delivery does this log entry apply to?",
-                            options=list(range(n)),
-                            format_func=lambda i: (
-                                f"Delivery {i + 1} — on time: "
-                                f"{'yes' if vision_estimates[i].on_time else 'no'}, footwork: "
-                                f"{'correct' if vision_estimates[i].footwork_correct else 'incorrect'}"
-                            ),
-                        )
-                    else:
-                        idx = 0
-                    vision_estimate = vision_estimates[idx]
-                    on_time = vision_estimate.on_time
-                    footwork_correct = vision_estimate.footwork_correct
-                    ready_to_log = True
-                    with st.expander("Raw features for this delivery"):
-                        st.json(vision_estimate.features.__dict__)
+            row_outcomes = []
+            if vision_estimates:
+                n = len(vision_estimates)
+                st.success(
+                    f"Detected {n} deliver{'y' if n == 1 else 'ies'} in this clip — "
+                    f"all will be logged as **{chosen_label}**. Set each one's outcome:"
+                )
+                outcome_keys = list(OUTCOME_QUALITY.keys())
+                for i, est in enumerate(vision_estimates):
+                    label_col, outcome_col = st.columns([2, 1])
+                    label_col.write(
+                        f"**Delivery {i + 1}** — on time: {'yes' if est.on_time else 'no'}, "
+                        f"footwork: {'correct' if est.footwork_correct else 'incorrect'}"
+                    )
+                    row_outcome = outcome_col.selectbox(
+                        f"Outcome for delivery {i + 1}", outcome_keys,
+                        key=f"video_outcome_{i}", label_visibility="collapsed",
+                    )
+                    row_outcomes.append(row_outcome)
+                with st.expander("Raw features for all detected deliveries"):
+                    st.json([est.features.__dict__ for est in vision_estimates])
 
-        if st.button("Log delivery", type="primary", disabled=not ready_to_log):
-            record = scorer.record_delivery(chosen_key, outcome, on_time, footwork_correct)
-            st.session_state.log.append((chosen_key, outcome))
-            st.session_state.recent_styles.append(chosen_key)
-            st.session_state.recent_styles = st.session_state.recent_styles[-2:]
-            st.rerun()
+            if st.button(
+                f"Log {len(row_outcomes)} deliver{'y' if len(row_outcomes) == 1 else 'ies'}"
+                if row_outcomes else "Log deliveries",
+                type="primary", disabled=not row_outcomes,
+            ):
+                for est, row_outcome in zip(vision_estimates, row_outcomes):
+                    scorer.record_delivery(chosen_key, row_outcome, est.on_time, est.footwork_correct)
+                    st.session_state.log.append((chosen_key, row_outcome))
+                    st.session_state.recent_styles.append(chosen_key)
+                st.session_state.recent_styles = st.session_state.recent_styles[-2:]
+                st.rerun()
 
         st.divider()
         st.subheader("Session log")
