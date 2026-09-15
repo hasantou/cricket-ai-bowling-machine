@@ -29,6 +29,12 @@ from .scorecard import (
     score_outcome,
     classify_delivery_legality,
 )
+from .net_outcome import (
+    NetOutcome,
+    NET_OUTCOMES,
+    classify_net_outcome,
+    classify_from_simulation,
+)
 
 __all__ = [
     "BallProperties",
@@ -49,4 +55,8 @@ __all__ = [
     "DEFAULT_SCORING",
     "score_outcome",
     "classify_delivery_legality",
+    "NetOutcome",
+    "NET_OUTCOMES",
+    "classify_net_outcome",
+    "classify_from_simulation",
 ]
