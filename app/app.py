@@ -15,6 +15,7 @@ Run with:  streamlit run app/app.py
 
 import csv
 import io
+import json
 import os
 import sys
 import tempfile
@@ -22,6 +23,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "adaptation-engine"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cv-pipeline"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "trajectory-engine"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "machine-control"))
 
 import streamlit as st
 from scoring import MasteryScorer, OUTCOME_QUALITY, MASTERY_THRESHOLD, MIN_SAMPLE
@@ -35,6 +37,7 @@ from cricket_trajectory import (
 )
 from cricket_trajectory.adaptive import suggest_next_delivery, delivery_difficulty_rating
 from cricket_trajectory.machine import WheelMachine
+from machine_control.session_store import save_profile, load_profile, save_scorecard, load_scorecard
 
 st.set_page_config(page_title="AI-Adaptive Bowling Machine — MVP", page_icon="🏏", layout="wide")
 
@@ -44,6 +47,54 @@ SCORER_ENGINES = ["Rule-based (EMA threshold)", "Neural (trained MLP)"]
 
 def _new_scorer(engine: str):
     return NeuralMasteryScorer() if engine == "Neural (trained MLP)" else MasteryScorer()
+
+
+def _style_session_to_json(scorer_engine, log) -> str:
+    """The style-library engine has no dedicated persistence module (its
+    scorer state lives inside MasteryScorer/NeuralMasteryScorer's private
+    records) — reconstructing by replaying `log` through record_delivery()
+    respects that encapsulation instead of reaching into private
+    attributes, and only needs the log itself to be saved."""
+    return json.dumps({"scorer_engine": scorer_engine, "log": log}, indent=2)
+
+
+def _style_session_from_json(data: bytes):
+    parsed = json.loads(data)
+    scorer_engine = parsed["scorer_engine"]
+    scorer = _new_scorer(scorer_engine)
+    log = [tuple(entry) for entry in parsed["log"]]
+    for key, outcome, on_time, footwork_correct in log:
+        scorer.record_delivery(key, outcome, on_time, footwork_correct)
+    recent_styles = [key for key, *_ in log[-2:]]
+    return scorer, scorer_engine, log, recent_styles
+
+
+def _traj_session_to_json(profile, card) -> str:
+    """Reuses machine-control's actual save_profile/save_scorecard —
+    round-tripped through real temp files (same pattern already used for
+    video uploads in this file) rather than reimplementing the same
+    serialization inline — and bundled into one file for a single
+    download instead of two."""
+    with tempfile.TemporaryDirectory() as d:
+        p_path, c_path = os.path.join(d, "profile.json"), os.path.join(d, "card.json")
+        save_profile(profile, p_path)
+        save_scorecard(card, c_path)
+        with open(p_path) as f:
+            profile_data = json.load(f)
+        with open(c_path) as f:
+            card_data = json.load(f)
+    return json.dumps({"profile": profile_data, "card": card_data}, indent=2)
+
+
+def _traj_session_from_json(data: bytes):
+    combined = json.loads(data)
+    with tempfile.TemporaryDirectory() as d:
+        p_path, c_path = os.path.join(d, "profile.json"), os.path.join(d, "card.json")
+        with open(p_path, "w") as f:
+            json.dump(combined["profile"], f)
+        with open(c_path, "w") as f:
+            json.dump(combined["card"], f)
+        return load_profile(p_path), load_scorecard(c_path)
 
 
 @st.cache_data(show_spinner="Running pose estimation on the clip...")
@@ -139,13 +190,38 @@ with st.sidebar:
             st.divider()
             buf = io.StringIO()
             writer = csv.writer(buf)
-            writer.writerow(["ball_number", "style_key", "style_label", "outcome"])
-            for i, (key, outcome_) in enumerate(st.session_state.log, 1):
-                writer.writerow([i, key, STYLE_BY_KEY[key].label, outcome_])
+            writer.writerow(["ball_number", "style_key", "style_label", "outcome", "on_time", "footwork_correct"])
+            for i, (key, outcome_, on_time_, footwork_) in enumerate(st.session_state.log, 1):
+                writer.writerow([i, key, STYLE_BY_KEY[key].label, outcome_, on_time_, footwork_])
             st.download_button(
                 "Download session log (CSV)", buf.getvalue(),
                 file_name="session_log.csv", mime="text/csv",
             )
+
+        st.divider()
+        st.caption(
+            "Save/load restores your scorer + full delivery log — download it before "
+            "closing the tab, since nothing here is stored anywhere else (Streamlit Cloud "
+            "resets on every redeploy)."
+        )
+        st.download_button(
+            "Save session (JSON)",
+            _style_session_to_json(st.session_state.scorer_engine, st.session_state.log),
+            file_name="style_session.json", mime="application/json",
+            disabled=not st.session_state.log,
+        )
+        uploaded = st.file_uploader("Load session (JSON)", type=["json"], key="style_session_upload")
+        if uploaded is not None and st.button("Apply loaded session"):
+            try:
+                scorer, scorer_engine, log, recent_styles = _style_session_from_json(uploaded.getvalue())
+            except (KeyError, ValueError, json.JSONDecodeError) as e:
+                st.error(f"Couldn't load that session file: {e}")
+            else:
+                st.session_state.scorer = scorer
+                st.session_state.scorer_engine = scorer_engine
+                st.session_state.log = log
+                st.session_state.recent_styles = recent_styles
+                st.rerun()
     else:
         st.caption(
             "Elo-style player rating vs. a delivery-difficulty rating computed directly "
@@ -183,6 +259,31 @@ with st.sidebar:
                 "Download session log (CSV)", buf.getvalue(),
                 file_name="trajectory_session_log.csv", mime="text/csv",
             )
+
+        st.divider()
+        st.caption(
+            "Save/load restores your player rating + full scorecard "
+            "(`machine-control/session_store.py`) — download it before closing the "
+            "tab, since nothing here is stored anywhere else (Streamlit Cloud resets "
+            "on every redeploy)."
+        )
+        st.download_button(
+            "Save session (JSON)",
+            _traj_session_to_json(st.session_state.traj_profile, st.session_state.traj_card),
+            file_name="trajectory_session.json", mime="application/json",
+            disabled=not st.session_state.traj_card.balls,
+        )
+        traj_uploaded = st.file_uploader("Load session (JSON)", type=["json"], key="traj_session_upload")
+        if traj_uploaded is not None and st.button("Apply loaded session", key="apply_traj_session"):
+            try:
+                profile, card = _traj_session_from_json(traj_uploaded.getvalue())
+            except (KeyError, ValueError, json.JSONDecodeError) as e:
+                st.error(f"Couldn't load that session file: {e}")
+            else:
+                st.session_state.traj_profile = profile
+                st.session_state.traj_card = card
+                st.session_state.traj_next_delivery = suggest_next_delivery(profile, st.session_state.traj_ball)
+                st.rerun()
 
 scorer = st.session_state.scorer
 
@@ -229,7 +330,7 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
 
             if st.button("Log delivery", type="primary"):
                 scorer.record_delivery(chosen_key, outcome, on_time, footwork_correct)
-                st.session_state.log.append((chosen_key, outcome))
+                st.session_state.log.append((chosen_key, outcome, on_time, footwork_correct))
                 st.session_state.recent_styles.append(chosen_key)
                 st.session_state.recent_styles = st.session_state.recent_styles[-2:]
                 st.rerun()
@@ -285,7 +386,7 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
             ):
                 for est, row_outcome in zip(vision_estimates, row_outcomes):
                     scorer.record_delivery(chosen_key, row_outcome, est.on_time, est.footwork_correct)
-                    st.session_state.log.append((chosen_key, row_outcome))
+                    st.session_state.log.append((chosen_key, row_outcome, est.on_time, est.footwork_correct))
                     st.session_state.recent_styles.append(chosen_key)
                 st.session_state.recent_styles = st.session_state.recent_styles[-2:]
                 st.rerun()
@@ -295,7 +396,7 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
         if not st.session_state.log:
             st.write("No deliveries logged yet.")
         else:
-            for i, (key, outcome_) in enumerate(reversed(st.session_state.log[-10:]), 1):
+            for i, (key, outcome_, *_rest) in enumerate(reversed(st.session_state.log[-10:]), 1):
                 st.write(f"{len(st.session_state.log) - i + 1}. {STYLE_BY_KEY[key].label} → **{outcome_}**")
 
     with right:
