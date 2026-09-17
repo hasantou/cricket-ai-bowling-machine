@@ -41,6 +41,27 @@ from machine_control.session_store import save_profile, load_profile, save_score
 
 st.set_page_config(page_title="AI-Adaptive Bowling Machine — MVP", page_icon="🏏", layout="wide")
 
+# Vintage cricket-pavilion styling on top of .streamlit/config.toml's base
+# theme — a serif display face for headings (evoking an old club
+# noticeboard) and a typewriter face specifically for the scorecard text
+# (st.text output below), since a scorecard is exactly the kind of thing
+# that would once have been typed on a real typewriter. Google Fonts is on
+# the artifact/app CDN allowlist; this is cosmetic only, nothing here
+# depends on it loading.
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Courier+Prime&display=swap');
+
+h1, h2, h3 { font-family: 'Playfair Display', Georgia, serif !important; }
+.stApp { background-color: #f4ecd8; }
+div[data-testid="stMetricValue"] { font-family: 'Playfair Display', Georgia, serif !important; }
+pre, code, div[data-testid="stText"] {
+    font-family: 'Courier Prime', 'Courier New', monospace !important;
+}
+hr { border-top: 1px solid #b8a888 !important; }
+</style>
+""", unsafe_allow_html=True)
+
 ENGINE_FAMILIES = ["Style library (adaptation-engine)", "Physics-based (trajectory-engine)"]
 SCORER_ENGINES = ["Rule-based (EMA threshold)", "Neural (trained MLP)"]
 
@@ -301,7 +322,10 @@ else:
         "Physics-based engine. Every delivery is a continuously varied set of real "
         "parameters (speed, seam angle, spin), not picked from a fixed list — the "
         "engine targets keeping your expected success near 50%, the 'challenge point', "
-        "rather than waiting for a fixed style to be 'mastered'."
+        "rather than waiting for a fixed style to be 'mastered'. Swing is modelled on "
+        "the seam-turbulence mechanism from Mehta, R.D. (1985), *Aerodynamics of "
+        "Sports Balls*, Annual Review of Fluid Mechanics, 17:151-189 — not a guessed "
+        "curve (see `trajectory-engine/cricket_trajectory/aerodynamics.py`)."
     )
 
 if st.session_state.engine_family == ENGINE_FAMILIES[0]:

@@ -1,0 +1,9 @@
+# App theme — a vintage cricket-pavilion/scorebook look: aged parchment,
+# ink-brown text, pavilion-maroon accents. Committed on purpose so the
+# deployed app picks it up (see .gitignore's note on this file).
+[theme]
+primaryColor = "#7a2e2e"
+backgroundColor = "#f4ecd8"
+secondaryBackgroundColor = "#e8dcc0"
+textColor = "#3b2f22"
+font = "serif"

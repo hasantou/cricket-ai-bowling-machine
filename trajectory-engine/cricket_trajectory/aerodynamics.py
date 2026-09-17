@@ -2,10 +2,25 @@
 Empirical aerodynamic coefficient models.
 
 None of these are exact -- real values come from wind-tunnel and field-tracking
-studies (e.g. Mehta's work on cricket ball aerodynamics) and vary with surface
-condition, humidity and individual balls. They're written as small, isolated
-functions so you can swap in a better-calibrated curve (e.g. fitted to Hawk-Eye
-trajectory data) without touching the integrator.
+studies and vary with surface condition, humidity and individual balls. They're
+written as small, isolated functions so you can swap in a better-calibrated
+curve (e.g. fitted to Hawk-Eye trajectory data) without touching the
+integrator.
+
+The seam-swing mechanism modelled in swing_coefficient() below -- a seam held
+at a small angle trips the laminar boundary layer into turbulence
+asymmetrically, deflecting the ball sideways -- is not a guess; it is the
+mechanism established by:
+
+    Mehta, R.D. (1985). "Aerodynamics of Sports Balls."
+    Annual Review of Fluid Mechanics, 17, 151-189.
+
+which confirmed the asymmetric separation points on the seam vs. non-seam
+sides via smoke-flow visualization. The ~20-25 degree "ideal" seam angle this
+module's peak_exponent=6 is tuned to reproduce (see swing_coefficient's
+docstring) is the same figure that paper's flow-visualization work supports --
+this module's shape is a working reconstruction of that finding, not the
+original wind-tunnel data itself.
 """
 
 from __future__ import annotations

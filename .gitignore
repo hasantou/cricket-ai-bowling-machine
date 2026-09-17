@@ -53,4 +53,7 @@ machine-control/output/
 *.pem
 *.key
 .pytest_cache/
-.streamlit/
+# .streamlit/config.toml (the app's theme) IS committed on purpose - only
+# actual secrets are excluded. Ignoring the whole directory here would
+# silently mean the deployed app never picks up the theme at all.
+.streamlit/secrets.toml
