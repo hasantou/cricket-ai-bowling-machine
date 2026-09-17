@@ -16,6 +16,7 @@ Run with:  streamlit run app/app.py
 import csv
 import io
 import json
+import math
 import os
 import sys
 import tempfile
@@ -120,6 +121,15 @@ def _traj_session_from_json(data: bytes):
         return load_profile(p_path), load_scorecard(c_path)
 
 
+def _margin_for_target(target_success: float) -> float:
+    """Inverts the Elo expected-score curve used by expected_success() so a
+    chosen target win rate (e.g. 0.5) turns into the challenge_margin
+    suggest_next_delivery() actually searches around — clamped away from
+    the 0/1 edges where the inverse blows up."""
+    target_success = min(max(target_success, 0.05), 0.95)
+    return 400.0 * math.log10((1.0 - target_success) / target_success)
+
+
 @st.cache_data(show_spinner="Running pose estimation on the clip...")
 def _analyse_clip(video_bytes: bytes, suffix: str):
     """Cached on the uploaded file's bytes so re-running the app (e.g. the
@@ -154,9 +164,12 @@ if "traj_profile" not in st.session_state:
     st.session_state.traj_profile = PlayerProfile(name="Player 1", rating=1000.0)
 if "traj_card" not in st.session_state:
     st.session_state.traj_card = Scorecard(batter_name=st.session_state.traj_profile.name)
+if "traj_target_success" not in st.session_state:
+    st.session_state.traj_target_success = 0.5
 if "traj_next_delivery" not in st.session_state:
     st.session_state.traj_next_delivery = suggest_next_delivery(
-        st.session_state.traj_profile, st.session_state.traj_ball
+        st.session_state.traj_profile, st.session_state.traj_ball,
+        challenge_margin=_margin_for_target(st.session_state.traj_target_success),
     )
 if "traj_controller" not in st.session_state:
     # No real machine exists to connect to yet - SimulatedMachineController
@@ -266,11 +279,33 @@ with st.sidebar:
             "project notes for the measured ~100-point rating lag against a simulated "
             "improving batter."
         )
+
+        target_pct = st.slider(
+            "Target success rate", min_value=30, max_value=70,
+            value=int(round(st.session_state.traj_target_success * 100)), step=5,
+            format="%d%%",
+        )
+        st.caption(
+            "What share of deliveries the engine aims for you to handle well. Lower = "
+            "harder deliveries picked; higher = easier ones — it's a target the engine "
+            "aims at, not a guarantee for any single ball, so expect it to land a few "
+            "points either side."
+        )
+        new_target = target_pct / 100.0
+        if abs(new_target - st.session_state.traj_target_success) > 1e-9:
+            st.session_state.traj_target_success = new_target
+            st.session_state.traj_next_delivery = suggest_next_delivery(
+                st.session_state.traj_profile, st.session_state.traj_ball,
+                challenge_margin=_margin_for_target(new_target),
+            )
+            st.rerun()
+
         if st.button("Reset session", key="reset_traj"):
             st.session_state.traj_profile = PlayerProfile(name="Player 1", rating=1000.0)
             st.session_state.traj_card = Scorecard(batter_name=st.session_state.traj_profile.name)
             st.session_state.traj_next_delivery = suggest_next_delivery(
-                st.session_state.traj_profile, st.session_state.traj_ball
+                st.session_state.traj_profile, st.session_state.traj_ball,
+                challenge_margin=_margin_for_target(st.session_state.traj_target_success),
             )
             st.session_state.traj_controller = SafeMachineController(
                 SimulatedMachineController(cycle_time_s=1.5), SafetyLimits(max_wheel_rpm=6000.0)
@@ -318,7 +353,10 @@ with st.sidebar:
             else:
                 st.session_state.traj_profile = profile
                 st.session_state.traj_card = card
-                st.session_state.traj_next_delivery = suggest_next_delivery(profile, st.session_state.traj_ball)
+                st.session_state.traj_next_delivery = suggest_next_delivery(
+                    profile, st.session_state.traj_ball,
+                    challenge_margin=_margin_for_target(st.session_state.traj_target_success),
+                )
                 st.rerun()
 
 scorer = st.session_state.scorer
@@ -336,8 +374,10 @@ else:
     st.caption(
         "Physics-based engine. Every delivery is a continuously varied set of real "
         "parameters (speed, seam angle, spin), not picked from a fixed list — the "
-        "engine targets keeping your expected success near 50%, the 'challenge point', "
-        "rather than waiting for a fixed style to be 'mastered'. Swing is modelled on "
+        f"engine targets keeping your expected success near "
+        f"**{st.session_state.traj_target_success*100:.0f}%** (the 'challenge point', "
+        "adjustable in the sidebar), rather than waiting for a fixed style to be "
+        "'mastered'. Swing is modelled on "
         "the seam-turbulence mechanism from Mehta, R.D. (1985), *Aerodynamics of "
         "Sports Balls*, Annual Review of Fluid Mechanics, 17:151-189 — not a guessed "
         "curve (see `trajectory-engine/cricket_trajectory/aerodynamics.py`)."
@@ -493,7 +533,9 @@ else:
         st.info(f"**{next_ball.label}**")
         st.caption(
             f"Difficulty rating {d_rating:.0f} vs. your rating {profile.rating:.0f} → "
-            f"expected success **{pre_expected*100:.0f}%** (engine targets ~50%)"
+            f"expected success **{pre_expected*100:.0f}%** "
+            f"(engine targets ~{st.session_state.traj_target_success*100:.0f}%, "
+            "adjustable in the sidebar)"
         )
         spin_mag = sum(w * w for w in next_ball.spin_rad_s) ** 0.5
         machine = WheelMachine()
@@ -546,7 +588,10 @@ else:
                 )
                 if st.button("Confirm — re-bowl", type="primary"):
                     card.record_ball(profile, ball, next_ball, sim_result)
-                    st.session_state.traj_next_delivery = suggest_next_delivery(profile, ball)
+                    st.session_state.traj_next_delivery = suggest_next_delivery(
+                        profile, ball,
+                        challenge_margin=_margin_for_target(st.session_state.traj_target_success),
+                    )
                     st.session_state.traj_delivery_sent = False
                     st.rerun()
             else:
@@ -556,7 +601,10 @@ else:
                 )
                 if st.button("Log delivery", type="primary"):
                     card.record_ball(profile, ball, next_ball, sim_result, outcome=outcome)
-                    st.session_state.traj_next_delivery = suggest_next_delivery(profile, ball)
+                    st.session_state.traj_next_delivery = suggest_next_delivery(
+                        profile, ball,
+                        challenge_margin=_margin_for_target(st.session_state.traj_target_success),
+                    )
                     st.session_state.traj_delivery_sent = False
                     st.rerun()
 
@@ -588,7 +636,10 @@ else:
 
             st.divider()
             st.subheader("Expected success per ball")
-            st.caption("Engine aims to keep this near 50% (the 'challenge point') — not too easy, not too hard.")
+            st.caption(
+                f"Engine aims to keep this near {st.session_state.traj_target_success*100:.0f}% "
+                "(the 'challenge point', adjustable in the sidebar) — not too easy, not too hard."
+            )
             expected_per_ball = [
                 expected_success(r.player_rating_before, r.delivery_difficulty) for r in scored_balls
             ]
