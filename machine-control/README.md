@@ -24,10 +24,12 @@ machine_control/
   serial_controller.py   SerialMachineController — a real driver, speaks PROTOCOL.md
   safety.py              SafeMachineController — hard limits + kill-switch, wraps any controller
   outcome_observer.py    OutcomeObserver (abstract) + ScriptedOutcomeObserver
+  impact_sensor.py       ImpactSensor (abstract) + ImpactSensorOutcomeObserver — a real OutcomeObserver
+  release_sensor.py      ReleaseSensor (abstract) + SpeedCalibrator — measures and corrects machine.py's RPM->speed mapping
   orchestrator.py         MachineOrchestrator — the actual decide->command->sense->score loop
   session_store.py       JSON save/load for PlayerProfile and Scorecard (resumability)
 PROTOCOL.md              The serial wire protocol SerialMachineController speaks
-tests/                   44 tests covering every piece above
+tests/                   57 tests covering every piece above
 demo_orchestrator.py     runnable end-to-end demo against simulated hardware
 ```
 
@@ -52,12 +54,30 @@ the physical link and the firmware on the other end of it are not, because
 neither exists yet (see `PROTOCOL.md` for what's deliberately left open).
 
 **`OutcomeObserver`** (`outcome_observer.py`) mirrors this on the sensing
-side: `observe(delivery, ball) -> outcome`. No real implementation exists
-yet either — ball tracking is real but weak (~12% recall on real footage),
-bat tracking isn't built, and the sparse-detection physics fit is only
-reliable for slower/shorter shots (see project notes for the measured
-limits). `ScriptedOutcomeObserver` replays a fixed sequence for tests and
-demos.
+side: `observe(delivery, ball) -> outcome`. `ScriptedOutcomeObserver`
+replays a fixed sequence for tests and demos. `ImpactSensorOutcomeObserver`
+(`impact_sensor.py`) is the first *real* implementation, built on a
+different idea from ball tracking: rather than trying to visually resolve
+a small fast ball (the approach `cv-pipeline/motion_ball_detector.py`
+tried against real footage and found genuinely hard), it wraps a much
+simpler post-contact sensor — trip-beams or a pressure-sensitive net
+panel giving just (distance, height) — and runs that straight through
+`trajectory-engine/cricket_trajectory/net_outcome.py`'s already-tested
+classification logic. No real sensor exists yet; `SimulatedImpactSensor`
+stands in for one.
+
+**`release_sensor.py`** closes a different, pre-contact gap: unlike a
+human bowler, this system commands the delivery it's about to make, so it
+already knows the intended speed — it only needs one cheap sensor (a
+photogate, the same tech radar guns use) at the release point to confirm
+what actually happened and correct
+`trajectory-engine/cricket_trajectory/machine.py`'s RPM-to-speed mapping
+over time, exactly what that module's own docstring already asks for
+("calibrate ... with a radar gun ... then treat it as fixed") but never
+had code for. `SpeedCalibrator` fits the correction from real
+measurements; tested by recovering a known true efficiency from noisy
+synthetic measurements (verified stable across 100 random seeds, worst
+recovered error 0.4%).
 
 ## The safety layer
 
@@ -98,13 +118,20 @@ losing everything when the process ends.
 python3 -m pytest machine-control/tests/ -v
 ```
 
-28 tests: the simulated controller's readiness/stop semantics, every
+57 tests: the simulated controller's readiness/stop semantics, every
 safety-limit rejection path (including a real bug this caught — `reset()`
 originally only cleared this layer's own flag, not the inner controller's
 stopped state, which would have silently left the machine stuck even
 though the safety layer reported itself re-enabled), the scripted
-observer, session-store round-trips, and the orchestrator's full run loop
-including a safety-violation stopping it immediately.
+observer, session-store round-trips, the orchestrator's full run loop
+including a safety-violation stopping it immediately, the serial
+protocol's encode/decode logic against a fake connection, and — the two
+sensor modules — `ImpactSensorOutcomeObserver` classifying every net
+outcome correctly from raw (distance, height) readings, and
+`SpeedCalibrator` recovering a machine's true (initially unknown)
+speed_efficiency from noisy simulated measurements and confirming the
+correction actually improves future delivery accuracy, not just that the
+recovered number "looks right."
 
 ## What this does *not* claim to solve
 

@@ -22,6 +22,10 @@ from .safety import SafeMachineController, SafetyLimits, SafetyViolation
 from .outcome_observer import OutcomeObserver, ScriptedOutcomeObserver
 from .session_store import save_profile, load_profile, save_scorecard, load_scorecard
 from .orchestrator import MachineOrchestrator, OrchestratorEvent
+from .release_sensor import ReleaseSensor, SimulatedReleaseSensor, SpeedCalibrator, ReleaseMeasurement
+from .impact_sensor import (
+    ImpactSensor, SimulatedImpactSensor, ImpactSensorOutcomeObserver, NoContactDetected,
+)
 
 __all__ = [
     "MachineController", "SimulatedMachineController", "CommandedDelivery",
@@ -29,4 +33,6 @@ __all__ = [
     "OutcomeObserver", "ScriptedOutcomeObserver",
     "save_profile", "load_profile", "save_scorecard", "load_scorecard",
     "MachineOrchestrator", "OrchestratorEvent",
+    "ReleaseSensor", "SimulatedReleaseSensor", "SpeedCalibrator", "ReleaseMeasurement",
+    "ImpactSensor", "SimulatedImpactSensor", "ImpactSensorOutcomeObserver", "NoContactDetected",
 ]
