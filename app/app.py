@@ -38,6 +38,8 @@ from cricket_trajectory import (
 from cricket_trajectory.adaptive import suggest_next_delivery, delivery_difficulty_rating
 from cricket_trajectory.machine import WheelMachine
 from machine_control.session_store import save_profile, load_profile, save_scorecard, load_scorecard
+from machine_control.controller import SimulatedMachineController
+from machine_control.safety import SafeMachineController, SafetyLimits, SafetyViolation
 
 st.set_page_config(page_title="AI-Adaptive Bowling Machine — MVP", page_icon="🏏", layout="wide")
 
@@ -156,6 +158,16 @@ if "traj_next_delivery" not in st.session_state:
     st.session_state.traj_next_delivery = suggest_next_delivery(
         st.session_state.traj_profile, st.session_state.traj_ball
     )
+if "traj_controller" not in st.session_state:
+    # No real machine exists to connect to yet - SimulatedMachineController
+    # stands in for one, wrapped in the same SafeMachineController a real
+    # driver would be. Swapping the simulated controller for a real one
+    # later is the only change needed anywhere in this app; every button
+    # below already calls the real machine-control interface, not a mock
+    # built for the UI.
+    st.session_state.traj_controller = SafeMachineController(
+        SimulatedMachineController(cycle_time_s=1.5), SafetyLimits(max_wheel_rpm=6000.0)
+    )
 
 with st.sidebar:
     st.header("Session settings")
@@ -259,6 +271,9 @@ with st.sidebar:
             st.session_state.traj_card = Scorecard(batter_name=st.session_state.traj_profile.name)
             st.session_state.traj_next_delivery = suggest_next_delivery(
                 st.session_state.traj_profile, st.session_state.traj_ball
+            )
+            st.session_state.traj_controller = SafeMachineController(
+                SimulatedMachineController(cycle_time_s=1.5), SafetyLimits(max_wheel_rpm=6000.0)
             )
             st.rerun()
 
@@ -462,6 +477,9 @@ else:
     env = st.session_state.traj_env
     card = st.session_state.traj_card
     next_ball = st.session_state.traj_next_delivery
+    controller = st.session_state.traj_controller
+    if "traj_delivery_sent" not in st.session_state:
+        st.session_state.traj_delivery_sent = False
 
     # Simulate the flight up front — legality (wide/no-ball) is judged from
     # this trajectory alone, before any outcome is even asked for.
@@ -480,30 +498,74 @@ else:
         spin_mag = sum(w * w for w in next_ball.spin_rad_s) ** 0.5
         machine = WheelMachine()
         rpm1, rpm2 = machine.wheel_rpms_for_delivery(next_ball.speed_mps, spin_mag, ball)
-        st.caption(
-            f"Twin-wheel machine setting (if driving one directly): "
-            f"wheel 1 ≈ {rpm1:.0f} rpm, wheel 2 ≈ {rpm2:.0f} rpm"
-        )
 
-        if legality is not None:
-            st.warning(
-                f"Simulated flight rules this a **{legality.upper()}** — computed directly "
-                "from the trajectory (line/height at the batting crease), no umpire input "
-                "needed for this part. Scores as +1 extra; the machine re-bowls."
-            )
-            if st.button("Bowl it", type="primary"):
-                card.record_ball(profile, ball, next_ball, sim_result)
-                st.session_state.traj_next_delivery = suggest_next_delivery(profile, ball)
+        st.markdown("**Machine connection**")
+        st.caption(
+            "No real machine is wired in yet — this runs against "
+            "`SimulatedMachineController`, wrapped in the same `SafeMachineController` "
+            "hard-limit/kill-switch layer a real driver would be "
+            "(`machine-control/machine_control/`). Swapping the simulated controller for "
+            "a real one is the only change needed anywhere in this app; every button "
+            "here already calls the real interface, not something built just for this UI."
+        )
+        status_col1, status_col2 = st.columns(2)
+        status_col1.metric("Enabled", "yes" if controller.enabled else "NO — stopped")
+        status_col2.metric("Ready for next command", "yes" if controller.is_ready() else "not yet")
+
+        if not controller.enabled:
+            st.error("Machine is emergency-stopped. Confirm it's safe before resuming.")
+            if st.button("Reset (confirm safe to resume)", type="primary"):
+                controller.reset()
+                st.rerun()
+        elif not st.session_state.traj_delivery_sent:
+            if st.button(f"Send to machine — wheel 1 ≈ {rpm1:.0f} rpm, wheel 2 ≈ {rpm2:.0f} rpm", type="primary"):
+                try:
+                    controller.set_delivery(rpm1, rpm2)
+                except SafetyViolation as e:
+                    st.error(f"Machine refused this command: {e}")
+                except RuntimeError as e:
+                    st.warning(f"Machine not ready yet: {e}")
+                else:
+                    st.session_state.traj_delivery_sent = True
+                    st.rerun()
+            if st.button("Emergency stop", key="estop_before_send"):
+                controller.emergency_stop()
                 st.rerun()
         else:
-            outcome = st.radio(
-                "Outcome", list(OUTCOME_SCORES.keys()),
-                horizontal=True, index=0,
-            )
-            if st.button("Log delivery", type="primary"):
-                card.record_ball(profile, ball, next_ball, sim_result, outcome=outcome)
-                st.session_state.traj_next_delivery = suggest_next_delivery(profile, ball)
+            st.success("Command sent — this delivery has been bowled (simulated).")
+            if st.button("Emergency stop", key="estop_after_send"):
+                controller.emergency_stop()
+                st.session_state.traj_delivery_sent = False
                 st.rerun()
+
+            if legality is not None:
+                st.warning(
+                    f"Simulated flight rules this a **{legality.upper()}** — computed directly "
+                    "from the trajectory (line/height at the batting crease), no umpire input "
+                    "needed for this part. Scores as +1 extra; the machine re-bowls."
+                )
+                if st.button("Confirm — re-bowl", type="primary"):
+                    card.record_ball(profile, ball, next_ball, sim_result)
+                    st.session_state.traj_next_delivery = suggest_next_delivery(profile, ball)
+                    st.session_state.traj_delivery_sent = False
+                    st.rerun()
+            else:
+                outcome = st.radio(
+                    "Outcome", list(OUTCOME_SCORES.keys()),
+                    horizontal=True, index=0,
+                )
+                if st.button("Log delivery", type="primary"):
+                    card.record_ball(profile, ball, next_ball, sim_result, outcome=outcome)
+                    st.session_state.traj_next_delivery = suggest_next_delivery(profile, ball)
+                    st.session_state.traj_delivery_sent = False
+                    st.rerun()
+
+        inner_history = getattr(controller._inner, "history", None)
+        if inner_history:
+            with st.expander(f"Machine command log ({len(inner_history)} sent)"):
+                for cmd in reversed(inner_history[-10:]):
+                    tag = "EMERGENCY STOP" if cmd.stopped else f"{cmd.wheel1_rpm:.0f} / {cmd.wheel2_rpm:.0f} rpm"
+                    st.write(f"- {tag}")
 
         st.divider()
         st.subheader("Scorecard")
