@@ -8,3 +8,4 @@ opencv-contrib-python>=4.9
 scipy>=1.10
 pandas>=2.0
 matplotlib>=3.7
+pyserial>=3.5

@@ -41,6 +41,11 @@ from cricket_trajectory.machine import WheelMachine
 from machine_control.session_store import save_profile, load_profile, save_scorecard, load_scorecard
 from machine_control.controller import SimulatedMachineController
 from machine_control.safety import SafeMachineController, SafetyLimits, SafetyViolation
+from machine_control.serial_controller import SerialCommunicationError, SerialMachineController
+try:
+    from serial.tools import list_ports as _serial_list_ports
+except ImportError:
+    _serial_list_ports = None
 
 st.set_page_config(page_title="AI-Adaptive Bowling Machine — MVP", page_icon="🏏", layout="wide")
 
@@ -550,9 +555,61 @@ else:
             "a real one is the only change needed anywhere in this app; every button "
             "here already calls the real interface, not something built just for this UI."
         )
+        with st.expander("Connect a real machine (serial)"):
+            st.caption(
+                "Speaks the line protocol in `machine-control/PROTOCOL.md` — any "
+                "microcontroller (Arduino, ESP32, a Pi Pico) running that protocol "
+                "works here unchanged. No firmware exists yet, because no physical "
+                "machine has been chosen yet (see `ROADMAP.md`) — this side of the "
+                "wire is real and tested against a fake serial link "
+                "(`machine-control/tests/test_serial_controller.py`); there's just "
+                "nothing plugged into the other end. Also: this only finds ports on "
+                "whatever machine is actually running the app — on Streamlit Cloud "
+                "that's a remote server with no physical ports at all, so this only "
+                "does anything when you run the app locally on a machine wired to "
+                "real hardware."
+            )
+            detected = [p.device for p in _serial_list_ports.comports()] if _serial_list_ports else []
+            port_choice = st.selectbox("Detected ports", detected + ["(enter manually)"]) if detected else "(enter manually)"
+            manual_port = st.text_input(
+                "Serial port", value="COM3",
+                disabled=bool(detected) and port_choice != "(enter manually)",
+            )
+            chosen_port = manual_port if port_choice == "(enter manually)" else port_choice
+            baud = st.number_input("Baud rate", value=115200, step=9600)
+
+            conn_col1, conn_col2 = st.columns(2)
+            if conn_col1.button("Connect"):
+                try:
+                    real = SerialMachineController(port=chosen_port, baudrate=int(baud))
+                except SerialCommunicationError as e:
+                    st.error(f"Couldn't connect: {e}")
+                except Exception as e:
+                    st.error(f"Couldn't open {chosen_port}: {e}")
+                else:
+                    st.session_state.traj_controller = SafeMachineController(
+                        real, SafetyLimits(max_wheel_rpm=6000.0)
+                    )
+                    st.session_state.traj_delivery_sent = False
+                    st.success(f"Opened {chosen_port} — status below reflects a real PING to it now.")
+                    st.rerun()
+            if conn_col2.button("Use simulated machine instead"):
+                try:
+                    if hasattr(controller._inner, "close"):
+                        controller._inner.close()
+                except Exception:
+                    pass  # best-effort; switching backends should never get stuck on this
+                st.session_state.traj_controller = SafeMachineController(
+                    SimulatedMachineController(cycle_time_s=1.5), SafetyLimits(max_wheel_rpm=6000.0)
+                )
+                st.session_state.traj_delivery_sent = False
+                st.rerun()
+
         status_col1, status_col2 = st.columns(2)
         status_col1.metric("Enabled", "yes" if controller.enabled else "NO — stopped")
+        backend_name = type(controller._inner).__name__
         status_col2.metric("Ready for next command", "yes" if controller.is_ready() else "not yet")
+        st.caption(f"Backend: **{backend_name}**" + (f" on `{controller._inner.port}`" if hasattr(controller._inner, "port") else ""))
 
         if not controller.enabled:
             st.error("Machine is emergency-stopped. Confirm it's safe before resuming.")

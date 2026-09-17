@@ -66,6 +66,12 @@ loop itself changing:
 - `MachineController` (abstract) is the only thing the software knows about
   a physical machine — a real driver for a specific machine implements the
   same four methods; nothing else needs to change when hardware does.
+  `SerialMachineController` is that driver, already built: it speaks a
+  documented line protocol (`machine-control/PROTOCOL.md`) that any
+  microcontroller firmware can implement, regardless of which physical
+  machine it ends up wired to — the app's sidebar lets you connect to a
+  real serial port with it today, there's just no firmware on the other
+  end yet.
 - `SafeMachineController` wraps any controller with hard limits and an
   emergency-stop that needs an explicit human reset — never a silent
   auto-resume.
@@ -78,7 +84,7 @@ to target. That's a decision, not an engineering task — see `ROADMAP.md`.
 
 ## Status
 
-83 automated tests passing across all four Python packages
+99 automated tests passing across all four Python packages
 (`adaptation-engine/`, `cv-pipeline/`, `trajectory-engine/`, `machine-control/`).
 What that number covers, and what it doesn't:
 

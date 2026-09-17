@@ -20,12 +20,14 @@ decision blocking real hardware integration, not a queued task.
 
 ```
 machine_control/
-  controller.py         MachineController (abstract) + SimulatedMachineController
+  controller.py          MachineController (abstract) + SimulatedMachineController
+  serial_controller.py   SerialMachineController — a real driver, speaks PROTOCOL.md
   safety.py              SafeMachineController — hard limits + kill-switch, wraps any controller
   outcome_observer.py    OutcomeObserver (abstract) + ScriptedOutcomeObserver
   orchestrator.py         MachineOrchestrator — the actual decide->command->sense->score loop
   session_store.py       JSON save/load for PlayerProfile and Scorecard (resumability)
-tests/                   28 tests covering every piece above
+PROTOCOL.md              The serial wire protocol SerialMachineController speaks
+tests/                   44 tests covering every piece above
 demo_orchestrator.py     runnable end-to-end demo against simulated hardware
 ```
 
@@ -39,6 +41,15 @@ whatever interface that machine actually exposes — that implementation
 doesn't exist yet and can't, without knowing which machine this targets.
 `SimulatedMachineController` implements the same interface with no real
 hardware, so everything above it is real, runnable, tested software today.
+`SerialMachineController` (`serial_controller.py`) is a second, real
+implementation of that same interface — it drives an actual serial link
+using the line protocol documented in `PROTOCOL.md`, so any microcontroller
+that implements that protocol works with this software already, without
+knowing which specific bowling machine it ends up wired to. Tested against
+a fake serial connection (`tests/test_serial_controller.py`) — the protocol
+logic (what gets sent, how a response is interpreted) is real and covered;
+the physical link and the firmware on the other end of it are not, because
+neither exists yet (see `PROTOCOL.md` for what's deliberately left open).
 
 **`OutcomeObserver`** (`outcome_observer.py`) mirrors this on the sensing
 side: `observe(delivery, ball) -> outcome`. No real implementation exists
