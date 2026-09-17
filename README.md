@@ -84,7 +84,7 @@ to target. That's a decision, not an engineering task — see `ROADMAP.md`.
 
 ## Status
 
-99 automated tests passing across all four Python packages
+106 automated tests passing across all four Python packages
 (`adaptation-engine/`, `cv-pipeline/`, `trajectory-engine/`, `machine-control/`).
 What that number covers, and what it doesn't:
 
@@ -98,10 +98,16 @@ What that number covers, and what it doesn't:
   decision engine here has been checked against simulated batters and
   simulated hardware, never a human being coached in front of an actual
   bowling machine.
-- **Not built**: automatic shot-outcome detection (ball tracking is real
-  but weak; bat tracking doesn't exist), any live/continuous camera feed
-  (today's CV pipeline processes an uploaded clip, not a running feed), and
-  any connection to actual hardware.
+- **Not built**: automatic shot-outcome detection. A ball detector was
+  tried (~12% recall on real footage — weak enough it was never committed
+  to this repo) and `cv-pipeline/ball_tracking.py` now exists to turn
+  sparse, noisy detections like that into one continuous trajectory, but
+  there is currently no detector feeding it real data; bat tracking
+  doesn't exist at all. Also not built: any live/continuous camera feed
+  (today's CV pipeline processes an uploaded clip, not a running feed),
+  and any real hardware connection — `machine-control/` has a real serial
+  driver and documented protocol ready for a microcontroller to speak,
+  but no physical machine has been chosen, so nothing is plugged in yet.
 
 ## Start here
 

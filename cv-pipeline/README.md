@@ -78,9 +78,33 @@ in `outcome_bridge.py`) is correct; there's still no ball-arrival time or
 coach's verdict to check it against, only genuine variation instead of a
 constant.
 
+- **`ball_tracking.py`** — takes sparse, noisy per-frame ball detections
+  (whatever a detector produces — real or synthetic) and fits one
+  continuous trajectory across the whole clip via RANSAC over a
+  line+parabola image-space motion model, so a detector only has to fire
+  on *some* frames, not every frame, for every frame to end up with a
+  usable ball position. There is no ball detector committed to this repo
+  to feed it real detections from — an earlier YOLOv8 experiment (trained
+  on Roboflow's CC BY 4.0 cricket-ball dataset) reached ~12% recall on
+  real nets footage, weak enough, and never checked in (trained weights
+  are gitignored) — so this is tested entirely against synthetic
+  detections sampled at that same 12% recall rate (`tests/test_ball_tracking.py`,
+  `demo_ball_tracking.py`). A real calibration bug was found and fixed
+  building this: an early version tried to reject "dangerously local"
+  fits (all 3 points bunched close together in time, extrapolated far
+  outside where they actually looked) by requiring inliers to span a
+  *fraction of the detections' own range* — which is circular exactly
+  like the original `on_time` bug below, since 3 detections trivially
+  span 100% of their own range no matter how clustered they are. Fixed
+  by requiring a fixed amount of real time (`min_span_seconds`, default
+  0.45s) instead, independent of how many detections exist — caps the
+  worst-case error at 67px instead of 822px, measured across a 250-trial
+  synthetic sweep at the real 12% recall rate.
+
 ## What isn't built yet
 
-- Ball tracking (release point, trajectory, pitch location, deviation).
+- A real ball detector — `ball_tracking.py` above assumes one exists;
+  it doesn't yet (see that section for the honest history).
 - Bat-ball contact analysis / shot-outcome classification — this still
   needs a human, same as today's app.
 - Any validation of `on_time`/`footwork_correct` against a real coach's
@@ -118,12 +142,16 @@ python -c "from video_pipeline import estimate_outcomes_from_video; \
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-26 tests: feature-extraction math (including `footwork_lead_seconds`) and
+33 tests: feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the
-outcome-bridge heuristic's branches, and checks that `PoseEstimator` fails
+outcome-bridge heuristic's branches, checks that `PoseEstimator` fails
 loudly and helpfully (not silently) when the model hasn't been downloaded,
-and that one instance can process multiple clips in sequence without
+that one instance can process multiple clips in sequence without
 MediaPipe's video-timestamp error (a real bug found and fixed by running
-actual WhatsApp footage through this pipeline — see git history).
+actual WhatsApp footage through this pipeline — see git history), and
+`ball_tracking.py`'s RANSAC trajectory fit against synthetic detections at
+the real ~12% recall rate — dense/clean recovery, sparse+noisy recovery,
+outlier rejection, refusing to fit on too little data, and a regression
+test for the temporal-clustering bug described above.
