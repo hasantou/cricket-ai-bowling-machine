@@ -100,6 +100,32 @@ constant.
   0.45s) instead, independent of how many detections exist — caps the
   worst-case error at 67px instead of 822px, measured across a 250-trial
   synthetic sweep at the real 12% recall rate.
+- **`motion_ball_detector.py`** — an untrained alternative to a YOLO-style
+  detector: background subtraction (OpenCV's MOG2) + filtering blobs by
+  size and circularity, on the theory that a cricket ball is one of the
+  few small, round, fast-moving things in a nets clip. No training data
+  needed, so — unlike the detector above — this could actually be run
+  against real footage instead of only synthetic data, and was: **it
+  didn't work.** Camera shake was ruled out first (0.2px mean frame-to-frame
+  shift, measured directly). What actually happened: on a wide/distant
+  clip, most flagged "candidates" traced back to the net mesh flickering
+  against the sky (wind + compression noise on fine repeating texture),
+  confirmed by drawing every candidate on real frames; turning sensitivity
+  down 8x cut the count but a manually re-checked survivor was a player's
+  hand, not the ball. On a second, closer-camera clip, directly hunting for
+  the ball — zoomed crops of the flight corridor, a frame-diff peak trace
+  outside the bowler's own body — never found it either; the one trace that
+  looked like real continuous motion turned out to be the batter's glove
+  shifting. **The honest conclusion this testing supports: on this
+  footage, the ball is at or below the visibility floor for a human
+  reviewer, not just an algorithm** — likely small size + motion blur +
+  video compression stacking together. That points at the camera setup
+  (distance, zoom, shutter speed) as the actual blocker, not detector
+  choice — worth fixing before spending more effort on any ball-detection
+  approach, trained or classical. Kept in the repo, tested against
+  synthetic data (5 tests, `tests/test_motion_ball_detector.py`) exactly
+  like `ball_tracking.py`, in case footage from a closer/better-positioned
+  camera makes the underlying idea viable later.
 
 ## What isn't built yet
 
@@ -142,7 +168,7 @@ python -c "from video_pipeline import estimate_outcomes_from_video; \
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-33 tests: feature-extraction math (including `footwork_lead_seconds`) and
+38 tests: feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the
@@ -154,4 +180,10 @@ actual WhatsApp footage through this pipeline — see git history), and
 `ball_tracking.py`'s RANSAC trajectory fit against synthetic detections at
 the real ~12% recall rate — dense/clean recovery, sparse+noisy recovery,
 outlier rejection, refusing to fit on too little data, and a regression
-test for the temporal-clustering bug described above.
+test for the temporal-clustering bug described above — plus
+`motion_ball_detector.py`'s blob filtering against synthetic frames
+(detects a small moving circle, rejects a large rectangle and a thin
+elongated sliver, per-frame best-candidate selection, a clear error on a
+missing file). Its real-footage evaluation (see above) was run by hand,
+not as part of this suite, since there's no ground truth to assert
+against — only visual inspection.

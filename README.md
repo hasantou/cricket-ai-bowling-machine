@@ -84,7 +84,7 @@ to target. That's a decision, not an engineering task — see `ROADMAP.md`.
 
 ## Status
 
-106 automated tests passing across all four Python packages
+111 automated tests passing across all four Python packages
 (`adaptation-engine/`, `cv-pipeline/`, `trajectory-engine/`, `machine-control/`).
 What that number covers, and what it doesn't:
 
@@ -98,12 +98,19 @@ What that number covers, and what it doesn't:
   decision engine here has been checked against simulated batters and
   simulated hardware, never a human being coached in front of an actual
   bowling machine.
-- **Not built**: automatic shot-outcome detection. A ball detector was
-  tried (~12% recall on real footage — weak enough it was never committed
-  to this repo) and `cv-pipeline/ball_tracking.py` now exists to turn
-  sparse, noisy detections like that into one continuous trajectory, but
-  there is currently no detector feeding it real data; bat tracking
-  doesn't exist at all. Also not built: any live/continuous camera feed
+- **Not built**: automatic shot-outcome detection. Two different ball-
+  detection approaches were tried and both fell short: a trained YOLOv8
+  detector reached ~12% recall on real footage (weak enough it was never
+  committed to this repo), and an untrained classical approach
+  (`cv-pipeline/motion_ball_detector.py`) tested directly against real
+  clips couldn't reliably find the ball either — direct visual inspection
+  of that same footage suggests the ball is at or below the visibility
+  floor there, pointing at camera setup (distance, zoom, shutter speed)
+  as the real blocker, not detector choice. `cv-pipeline/ball_tracking.py`
+  exists to turn sparse, noisy detections into one continuous trajectory
+  once a detector produces some, but there is currently no detector
+  feeding it real data; bat tracking doesn't exist at all. Also not
+  built: any live/continuous camera feed
   (today's CV pipeline processes an uploaded clip, not a running feed),
   and any real hardware connection — `machine-control/` has a real serial
   driver and documented protocol ready for a microcontroller to speak,
