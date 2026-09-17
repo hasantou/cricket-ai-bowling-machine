@@ -18,6 +18,7 @@ import io
 import json
 import math
 import os
+import random
 import sys
 import tempfile
 
@@ -42,6 +43,9 @@ from machine_control.session_store import save_profile, load_profile, save_score
 from machine_control.controller import SimulatedMachineController
 from machine_control.safety import SafeMachineController, SafetyLimits, SafetyViolation
 from machine_control.serial_controller import SerialCommunicationError, SerialMachineController
+from machine_control.release_sensor import SimulatedReleaseSensor, SpeedCalibrator
+from machine_control.impact_sensor import SimulatedImpactSensor, ImpactSensorOutcomeObserver
+from cricket_trajectory.net_outcome import classify_net_outcome, NET_OUTCOMES
 try:
     from serial.tools import list_ports as _serial_list_ports
 except ImportError:
@@ -135,6 +139,25 @@ def _margin_for_target(target_success: float) -> float:
     return 400.0 * math.log10((1.0 - target_success) / target_success)
 
 
+def _simulate_impact_reading(expected_success_pct: float, rng: random.Random):
+    """A toy, clearly-labelled stand-in for a real post-contact sensor
+    reading — not a real batter model. Returns (distance_m, height_m), or
+    None for "no contact", biased so a delivery the batter was expected
+    to handle comfortably (high expected_success) skews toward
+    well-struck distances, and a delivery they were expected to struggle
+    with skews toward dead-bat/mistimed outcomes. Exists to demonstrate
+    ImpactSensorOutcomeObserver's real classification logic end-to-end in
+    this UI, not to claim any predictive accuracy about real batting.
+    """
+    if rng.random() < (1.0 - expected_success_pct) * 0.25:
+        return None  # simulated miss
+    mean_distance = 2.0 + expected_success_pct * 13.0
+    distance = max(0.0, rng.gauss(mean_distance, 3.0))
+    skied_chance = (1.0 - expected_success_pct) * 0.2
+    height = rng.gauss(4.5, 1.0) if rng.random() < skied_chance else max(0.0, rng.gauss(1.2, 0.6))
+    return distance, height
+
+
 @st.cache_data(show_spinner="Running pose estimation on the clip...")
 def _analyse_clip(video_bytes: bytes, suffix: str):
     """Cached on the uploaded file's bytes so re-running the app (e.g. the
@@ -186,6 +209,31 @@ if "traj_controller" not in st.session_state:
     st.session_state.traj_controller = SafeMachineController(
         SimulatedMachineController(cycle_time_s=1.5), SafetyLimits(max_wheel_rpm=6000.0)
     )
+if "traj_wheel_machine" not in st.session_state:
+    # The software's current belief about this machine's RPM<->speed
+    # mapping - persisted (not recreated each render) so calibration
+    # corrections actually stick across reruns instead of resetting.
+    st.session_state.traj_wheel_machine = WheelMachine()
+if "traj_true_wheel_machine" not in st.session_state:
+    # Stands in for real hardware's actual (never perfectly known)
+    # efficiency - every real machine has some manufacturing/wear
+    # variance from the textbook value the software starts out assuming.
+    # Randomised once per session so the calibration demo isn't identical
+    # every time, but fixed for the session so it converges toward
+    # something real rather than a moving target.
+    st.session_state.traj_true_wheel_machine = WheelMachine(
+        speed_efficiency=random.Random().uniform(0.78, 0.88)
+    )
+if "traj_release_sensor" not in st.session_state:
+    st.session_state.traj_release_sensor = SimulatedReleaseSensor(
+        st.session_state.traj_true_wheel_machine, noise_std_mps=0.3
+    )
+if "traj_speed_calibrator" not in st.session_state:
+    st.session_state.traj_speed_calibrator = SpeedCalibrator(
+        st.session_state.traj_wheel_machine, min_samples=5
+    )
+if "traj_impact_sensor" not in st.session_state:
+    st.session_state.traj_impact_sensor = SimulatedImpactSensor()
 
 with st.sidebar:
     st.header("Session settings")
@@ -543,7 +591,7 @@ else:
             "adjustable in the sidebar)"
         )
         spin_mag = sum(w * w for w in next_ball.spin_rad_s) ** 0.5
-        machine = WheelMachine()
+        machine = st.session_state.traj_wheel_machine
         rpm1, rpm2 = machine.wheel_rpms_for_delivery(next_ball.speed_mps, spin_mag, ball)
 
         st.markdown("**Machine connection**")
@@ -625,6 +673,13 @@ else:
                 except RuntimeError as e:
                     st.warning(f"Machine not ready yet: {e}")
                 else:
+                    # A real release-point sensor would fire automatically on
+                    # every delivery - simulate that here too, feeding the
+                    # calibrator so speed_efficiency keeps correcting itself.
+                    st.session_state.traj_release_sensor.arm(rpm1, rpm2)
+                    measured = st.session_state.traj_release_sensor.measure_speed_mps()
+                    st.session_state.traj_speed_calibrator.record(rpm1, rpm2, measured)
+                    st.session_state.traj_speed_calibrator.apply_calibration()
                     st.session_state.traj_delivery_sent = True
                     st.rerun()
             if st.button("Emergency stop", key="estop_before_send"):
@@ -652,18 +707,70 @@ else:
                     st.session_state.traj_delivery_sent = False
                     st.rerun()
             else:
-                outcome = st.radio(
-                    "Outcome", list(OUTCOME_SCORES.keys()),
-                    horizontal=True, index=0,
+                outcome_mode = st.radio(
+                    "How was the outcome determined?",
+                    ["Manual entry", "Simulated impact sensor"],
+                    horizontal=True,
                 )
-                if st.button("Log delivery", type="primary"):
-                    card.record_ball(profile, ball, next_ball, sim_result, outcome=outcome)
-                    st.session_state.traj_next_delivery = suggest_next_delivery(
-                        profile, ball,
-                        challenge_margin=_margin_for_target(st.session_state.traj_target_success),
+                if outcome_mode == "Manual entry":
+                    outcome = st.radio(
+                        "Outcome", list(OUTCOME_SCORES.keys()),
+                        horizontal=True, index=0,
                     )
-                    st.session_state.traj_delivery_sent = False
-                    st.rerun()
+                    if st.button("Log delivery", type="primary"):
+                        card.record_ball(profile, ball, next_ball, sim_result, outcome=outcome)
+                        st.session_state.traj_next_delivery = suggest_next_delivery(
+                            profile, ball,
+                            challenge_margin=_margin_for_target(st.session_state.traj_target_success),
+                        )
+                        st.session_state.traj_delivery_sent = False
+                        st.rerun()
+                else:
+                    st.caption(
+                        "`machine_control/impact_sensor.py` — a simple post-contact sensor reading "
+                        "(distance, height) instead of visually tracking the ball through the shot, "
+                        "which `cv-pipeline/motion_ball_detector.py` found genuinely hard on real "
+                        "footage. The reading below is a **toy simulated batter model**, not a real "
+                        "one — it exists to demonstrate the real classification code path end to end."
+                    )
+                    if "traj_sensor_reading" not in st.session_state:
+                        if st.button("Generate sensor reading (simulated)", type="primary"):
+                            rng = random.Random()
+                            reading = _simulate_impact_reading(pre_expected, rng)
+                            sensor = st.session_state.traj_impact_sensor
+                            sensor.arm(reading)
+                            observer = ImpactSensorOutcomeObserver(sensor)
+                            resolved_outcome = observer.observe(next_ball, ball)
+                            label = (
+                                classify_net_outcome(*reading).label if reading is not None
+                                else NET_OUTCOMES["no_contact"].label
+                            )
+                            st.session_state.traj_sensor_reading = {
+                                "reading": reading, "label": label, "outcome": resolved_outcome,
+                            }
+                            st.rerun()
+                    else:
+                        r = st.session_state.traj_sensor_reading
+                        if r["reading"] is None:
+                            st.warning("Sensor reading: no contact detected.")
+                        else:
+                            distance_m, height_m = r["reading"]
+                            st.info(
+                                f"Sensor reading: distance={distance_m:.1f}m, height={height_m:.1f}m "
+                                f"→ classified as **{r['label']}**"
+                            )
+                        if st.button("Log delivery", type="primary"):
+                            card.record_ball(profile, ball, next_ball, sim_result, outcome=r["outcome"])
+                            st.session_state.traj_next_delivery = suggest_next_delivery(
+                                profile, ball,
+                                challenge_margin=_margin_for_target(st.session_state.traj_target_success),
+                            )
+                            st.session_state.traj_delivery_sent = False
+                            del st.session_state.traj_sensor_reading
+                            st.rerun()
+                        if st.button("Generate a different reading"):
+                            del st.session_state.traj_sensor_reading
+                            st.rerun()
 
         inner_history = getattr(controller._inner, "history", None)
         if inner_history:
@@ -671,6 +778,27 @@ else:
                 for cmd in reversed(inner_history[-10:]):
                     tag = "EMERGENCY STOP" if cmd.stopped else f"{cmd.wheel1_rpm:.0f} / {cmd.wheel2_rpm:.0f} rpm"
                     st.write(f"- {tag}")
+
+        st.divider()
+        st.markdown("**Release-speed calibration** (`machine_control/release_sensor.py`)")
+        calibrator = st.session_state.traj_speed_calibrator
+        n_samples = len(calibrator.measurements)
+        st.caption(
+            "Unlike a human bowler, this system commands its own delivery — it doesn't need to "
+            "*track* the ball to check the release was right, only *confirm* it with one cheap "
+            "sensor (a photogate) at the release point. Simulated here: this session's machine has "
+            f"a hidden true speed efficiency of **{st.session_state.traj_true_wheel_machine.speed_efficiency:.3f}** "
+            "(manufacturing/wear variance every real machine has) that the software doesn't start out "
+            "knowing — watch its belief below converge toward it as deliveries are sent."
+        )
+        cal_col1, cal_col2 = st.columns(2)
+        cal_col1.metric("Deliveries measured", n_samples)
+        cal_col2.metric("Believed speed efficiency", f"{machine.speed_efficiency:.3f}")
+        if n_samples < calibrator.min_samples:
+            st.info(f"Needs {calibrator.min_samples - n_samples} more measured deliveries before it will calibrate.")
+        else:
+            error = abs(machine.speed_efficiency - st.session_state.traj_true_wheel_machine.speed_efficiency)
+            st.success(f"Calibrated — within {error:.3f} of the true value.")
 
         st.divider()
         st.subheader("Scorecard")
@@ -737,8 +865,23 @@ with st.expander("What's real here vs. what's a placeholder"):
         "(runs/wicket) still needs a human judgement call, same honesty gap as the "
         "style-library engine. The Elo tuning itself is uncalibrated — see the sidebar "
         "caption for the measured rating lag against a continuously improving player.\n"
-        "- **Not built yet, in either engine**: live actuation of a real bowling machine. "
-        "The physics engine computes the correct wheel-RPM numbers to set "
-        "(`cricket_trajectory/machine.py`); nothing here sends them to actual hardware — "
-        "a person still reads the number and sets the real machine."
+        "- **Machine connection (physics engine)**: every delivery goes through the real "
+        "`machine-control` interface (`SafeMachineController` + either "
+        "`SimulatedMachineController` or a real `SerialMachineController` — pick in the "
+        "'Connect a real machine' panel) rather than a person reading a number and setting "
+        "the real machine by hand. No physical machine has been chosen yet, so the serial "
+        "option has nothing plugged into the other end — see `machine-control/PROTOCOL.md`.\n"
+        "- **Sensing architecture (physics engine)**: two new pieces sidestep visual ball "
+        "tracking (which `cv-pipeline/motion_ball_detector.py` found genuinely hard on real "
+        "footage) by exploiting that this system commands its own deliveries. "
+        "**Release-speed calibration** measures each delivery's actual exit speed with one "
+        "simulated cheap sensor and corrects `machine.py`'s RPM-to-speed mapping over "
+        "time — watch the belief converge toward the (simulated) true value below the "
+        "command log. **Simulated impact sensor** (an alternative to manual outcome entry) "
+        "classifies the shot from a simple simulated post-contact reading (distance, height) "
+        "through the real, already-tested `net_outcome.py` logic. Both are real, tested "
+        "software (`machine-control/machine_control/release_sensor.py` and "
+        "`impact_sensor.py`) — run against simulated sensors, since no real ones exist yet; "
+        "the impact-sensor reading itself comes from a clearly-labelled toy batter model, "
+        "not a claim about real batting."
     )
