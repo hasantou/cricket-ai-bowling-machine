@@ -9,9 +9,14 @@ from cricket_trajectory.net_outcome import (
     NET_OUTCOMES,
     classify_net_outcome,
     classify_from_simulation,
+    classify_exit_velocity,
+    ExitVelocity,
     DEAD_BAT_DISTANCE_M,
     WELL_STRUCK_DISTANCE_M,
     SKIED_HEIGHT_M,
+    DEAD_BAT_SPEED_MPS,
+    WELL_STRUCK_SPEED_MPS,
+    SKIED_ELEVATION_DEG,
 )
 from cricket_trajectory.ball import BallProperties, Environment, Delivery
 from cricket_trajectory.simulate import run_simulation
@@ -79,3 +84,55 @@ def test_classify_from_simulation_matches_direct_classification():
 
     assert from_sim.label == direct.label
     assert from_sim.label == "well_struck"
+
+
+def test_exit_velocity_speed_elevation_and_azimuth_are_correct():
+    ev = ExitVelocity(vx=10.0, vy=10.0, vz=0.0)
+    assert abs(ev.speed_mps - (200.0 ** 0.5)) < 1e-9
+    assert abs(ev.elevation_deg - 0.0) < 1e-9
+    assert abs(ev.azimuth_deg - 45.0) < 1e-9
+    assert ev.direction_label() == "off side"
+
+
+def test_direction_label_leg_side_and_straight():
+    assert ExitVelocity(vx=10.0, vy=-10.0, vz=0.0).direction_label() == "leg side"
+    assert ExitVelocity(vx=10.0, vy=0.5, vz=0.0).direction_label() == "straight"
+
+
+def test_classify_exit_velocity_dead_bat_on_low_speed():
+    outcome, ev = classify_exit_velocity(vx=3.0, vy=0.0, vz=0.0)
+    assert outcome.label == "dead_bat"
+    assert abs(ev.speed_mps - 3.0) < 1e-9
+
+
+def test_classify_exit_velocity_controlled_placement_mid_speed():
+    outcome, _ = classify_exit_velocity(vx=10.0, vy=0.0, vz=0.0)
+    assert outcome.label == "controlled_placement"
+
+
+def test_classify_exit_velocity_well_struck_high_speed():
+    outcome, _ = classify_exit_velocity(vx=25.0, vy=0.0, vz=0.0)
+    assert outcome.label == "well_struck"
+
+
+def test_classify_exit_velocity_skied_takes_priority_over_speed():
+    # Fast off the bat (would otherwise read as well_struck) but launched
+    # steeply upward - elevation is checked first, same priority as
+    # classify_net_outcome()'s height-before-distance check.
+    outcome, ev = classify_exit_velocity(vx=20.0, vy=0.0, vz=15.0)
+    assert ev.speed_mps > WELL_STRUCK_SPEED_MPS  # would qualify as well_struck by speed alone
+    assert outcome.label == "mistimed_skied"
+
+
+def test_classify_exit_velocity_boundary_is_exclusive_on_the_low_side():
+    outcome, _ = classify_exit_velocity(vx=DEAD_BAT_SPEED_MPS, vy=0.0, vz=0.0)
+    assert outcome.label == "controlled_placement"
+
+
+def test_classify_exit_velocity_agrees_with_distance_based_classification_in_spirit():
+    # Not the same function, but both paths should agree on the clear
+    # cases: a gentle defensive-speed shot with no elevation shouldn't
+    # read as well_struck under either classifier.
+    outcome_by_velocity, _ = classify_exit_velocity(vx=2.0, vy=0.0, vz=0.0)
+    outcome_by_distance = classify_net_outcome(post_contact_distance_m=1.0, post_contact_max_height_m=0.3)
+    assert outcome_by_velocity.label == outcome_by_distance.label == "dead_bat"

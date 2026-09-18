@@ -91,6 +91,31 @@ def test_to_ball_detections_keeps_only_the_most_circular_candidate_per_frame():
     assert frame_5.x_px == 50 and frame_5.confidence == 0.9
 
 
+def test_roi_excludes_candidates_outside_it_and_keeps_coordinates_in_frame_space():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "two_balls.mp4")
+
+        def draw(frame, i):
+            cv2.circle(frame, (20 + i * 6, 80), radius=4, color=(230, 230, 230), thickness=-1)  # inside the ROI below
+            cv2.circle(frame, (20 + i * 3, 20), radius=4, color=(230, 230, 230), thickness=-1)  # outside it (y=20)
+
+        _write_synthetic_video(path, draw)
+        roi = (10, 60, WIDTH, HEIGHT)  # excludes y < 60 - drops the second circle entirely
+        candidates = detect_ball_candidates(path, min_radius_px=1.5, max_radius_px=10.0, roi=roi)
+
+    assert candidates, "expected the in-ROI circle to still be detected"
+    assert all(c.y_px >= 60.0 for c in candidates), "a candidate from outside the ROI leaked through"
+
+    by_frame = {c.frame_index: c for c in candidates}
+    for i in range(15, N_FRAMES):
+        if i in by_frame:
+            # Coordinates must be reported in the ORIGINAL frame's space
+            # (not shifted by the ROI's own origin) - matches the known
+            # path of the in-ROI circle directly.
+            assert abs(by_frame[i].x_px - (20 + i * 6)) < 5.0
+            assert abs(by_frame[i].y_px - 80) < 5.0
+
+
 def test_missing_file_raises_a_clear_error_not_a_silent_empty_result():
     with pytest.raises(FileNotFoundError):
         detect_ball_candidates("this/path/does/not/exist.mp4")

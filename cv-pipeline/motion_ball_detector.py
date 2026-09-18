@@ -50,7 +50,7 @@ for the full writeup.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional, Tuple
 
 import cv2
 
@@ -77,6 +77,7 @@ def detect_ball_candidates(
     min_circularity: float = 0.55,
     history: int = 50,
     var_threshold: float = 24.0,
+    roi: Optional[Tuple[int, int, int, int]] = None,
 ) -> List[MotionCandidate]:
     """Runs MOG2 background subtraction over the whole clip and keeps
     only foreground blobs that are both small (a person or their limbs
@@ -84,6 +85,17 @@ def detect_ball_candidates(
     distance) and round (`min_circularity`) — the two properties that
     plausibly distinguish a cricket ball from everything else that moves
     in a nets session: players, their shadows, netting in the wind.
+
+    `roi` (x_min, y_min, x_max, y_max, in pixels of the original frame) is
+    a real fix from real-footage testing, not a hypothetical one: on the
+    two clips this was actually run against, most false positives — net
+    mesh flickering against the sky, mainly — sat well outside where the
+    ball could plausibly be, up near the top of frame. Restricting
+    detection to a region around the batting crease is the cheapest
+    possible improvement, since it needs no new hardware or model, only
+    knowing roughly where to look. Detections are always returned in the
+    original frame's coordinates regardless of `roi`, so downstream code
+    (e.g. ball_tracking.py) never needs to know it was used.
 
     Returns every frame's surviving candidates, unfiltered further —
     there may be 0, 1, or several per frame. Downstream code (e.g.
@@ -104,6 +116,12 @@ def detect_ball_candidates(
             ok, frame = cap.read()
             if not ok:
                 break
+            if roi is not None:
+                x_min, y_min, x_max, y_max = roi
+                frame = frame[y_min:y_max, x_min:x_max]
+            else:
+                x_min = y_min = 0
+
             mask = subtractor.apply(frame)
             # A closed morphology pass merges a ball's often-fragmented
             # foreground pixels (motion blur, compression) into one blob
@@ -123,7 +141,7 @@ def detect_ball_candidates(
                 circularity = 4 * 3.141592653589793 * area / (perimeter ** 2)
                 if circularity < min_circularity:
                     continue
-                candidates.append(MotionCandidate(frame_index, x, y, radius, circularity))
+                candidates.append(MotionCandidate(frame_index, x + x_min, y + y_min, radius, circularity))
             frame_index += 1
     finally:
         cap.release()

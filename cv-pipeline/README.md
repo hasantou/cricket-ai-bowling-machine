@@ -125,7 +125,26 @@ constant.
   approach, trained or classical. Kept in the repo, tested against
   synthetic data (5 tests, `tests/test_motion_ball_detector.py`) exactly
   like `ball_tracking.py`, in case footage from a closer/better-positioned
-  camera makes the underlying idea viable later.
+  camera makes the underlying idea viable later. Now also accepts an
+  `roi` (region of interest) parameter — a direct, no-new-hardware fix
+  drawn from the real-footage testing above: most false positives sat
+  well outside where the ball could plausibly be, so restricting
+  detection to a region around the batting crease removes a whole class
+  of them for free.
+- **Extracted from a proposed stereo-camera exit-trajectory design**
+  (post-shot ball tracking via two synchronised cameras, triangulation,
+  and a kinematic fit) — the parts of that design that are genuinely
+  useful in software today, independent of whether that hardware ever
+  exists: `ball_tracking.py` gained `find_impact_and_split()` (detects
+  bat-ball contact from a velocity discontinuity between consecutive
+  detections, implementing an Incoming → Impact → Outgoing model — a
+  ball's flight before being struck tells you nothing about where it's
+  going after) and `trim_before_deceleration_spike()` (cuts a post-impact
+  sequence at the first sign of net-collision corruption, via a spike in
+  the second derivative of position). Both work in this module's existing
+  2D image-space domain — no camera calibration or real 3D needed — and
+  are tested against synthetic detection sequences
+  (`tests/test_ball_tracking.py`).
 
 ## What isn't built yet
 
@@ -168,7 +187,7 @@ python -c "from video_pipeline import estimate_outcomes_from_video; \
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-38 tests: feature-extraction math (including `footwork_lead_seconds`) and
+45 tests: feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the
@@ -183,7 +202,11 @@ outlier rejection, refusing to fit on too little data, and a regression
 test for the temporal-clustering bug described above — plus
 `motion_ball_detector.py`'s blob filtering against synthetic frames
 (detects a small moving circle, rejects a large rectangle and a thin
-elongated sliver, per-frame best-candidate selection, a clear error on a
-missing file). Its real-footage evaluation (see above) was run by hand,
-not as part of this suite, since there's no ground truth to assert
-against — only visual inspection.
+elongated sliver, per-frame best-candidate selection, an ROI correctly
+excluding an out-of-region candidate while keeping coordinates in the
+original frame's space, a clear error on a missing file), and
+`find_impact_and_split()`/`trim_before_deceleration_spike()` against
+synthetic velocity-discontinuity and deceleration-spike sequences. Its
+real-footage evaluation (see above) was run by hand, not as part of this
+suite, since there's no ground truth to assert against — only visual
+inspection.

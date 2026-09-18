@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 from ball_tracking import (
     BallDetection, BallTrajectoryFitError, fit_ball_trajectory, recover_missing_frames,
+    find_impact_and_split, trim_before_deceleration_spike,
 )
 
 FPS = 30.0
@@ -127,3 +128,59 @@ def test_recover_missing_frames_fills_every_frame_in_range():
     tx, ty = true_position(15)
     assert abs(px - tx) < 10.0
     assert abs(py - ty) < 10.0
+
+
+def _linear_track(frames, x0, y0, vx, vy):
+    return [BallDetection(f, x0 + vx * f, y0 + vy * f) for f in frames]
+
+
+# --- find_impact_and_split ---------------------------------------------
+
+def test_finds_impact_at_a_genuine_velocity_discontinuity():
+    incoming = _linear_track(range(0, 10), x0=100.0, y0=200.0, vx=5.0, vy=-3.0)
+    contact_x, contact_y = incoming[-1].x_px, incoming[-1].y_px  # position at frame 9
+    outgoing = [
+        BallDetection(f, contact_x + -15.0 * (f - 9), contact_y + 8.0 * (f - 9))
+        for f in range(10, 20)
+    ]
+    split = find_impact_and_split(incoming + outgoing, velocity_jump_threshold_px_per_frame=10.0)
+    assert split is not None
+    assert split.impact_frame == 10
+    assert [d.frame_index for d in split.incoming] == list(range(0, 10))
+    assert [d.frame_index for d in split.outgoing] == list(range(10, 20))
+
+
+def test_no_discontinuity_returns_none_not_a_guess():
+    steady = _linear_track(range(0, 20), x0=0.0, y0=0.0, vx=5.0, vy=-3.0)
+    assert find_impact_and_split(steady, velocity_jump_threshold_px_per_frame=10.0) is None
+
+
+def test_too_few_detections_returns_none_gracefully():
+    assert find_impact_and_split(
+        [BallDetection(0, 0, 0), BallDetection(1, 5, 5)], velocity_jump_threshold_px_per_frame=1.0,
+    ) is None
+
+
+# --- trim_before_deceleration_spike -------------------------------------
+
+def test_trims_at_a_genuine_deceleration_spike():
+    fast = _linear_track(range(0, 10), x0=500.0, y0=300.0, vx=-15.0, vy=8.0)
+    stop_x, stop_y = fast[-1].x_px, fast[-1].y_px  # position at frame 9
+    slowed = [
+        BallDetection(f, stop_x + -1.0 * (f - 9), stop_y + 0.0 * (f - 9))
+        for f in range(10, 15)
+    ]
+    trimmed = trim_before_deceleration_spike(fast + slowed, accel_jump_threshold_px_per_frame2=8.0)
+    assert [d.frame_index for d in trimmed] == list(range(0, 10))
+
+
+def test_no_spike_returns_everything_unchanged():
+    steady = _linear_track(range(0, 15), x0=0.0, y0=0.0, vx=-15.0, vy=8.0)
+    trimmed = trim_before_deceleration_spike(steady, accel_jump_threshold_px_per_frame2=8.0)
+    assert [d.frame_index for d in trimmed] == list(range(0, 15))
+
+
+def test_too_few_detections_returns_input_unchanged():
+    detections = [BallDetection(0, 0, 0), BallDetection(1, 5, 5)]
+    trimmed = trim_before_deceleration_spike(detections, accel_jump_threshold_px_per_frame2=1.0)
+    assert trimmed == detections

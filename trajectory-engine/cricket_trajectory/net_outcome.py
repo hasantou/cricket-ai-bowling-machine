@@ -29,6 +29,7 @@ for testing. This module only classifies what it's given.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from .simulate import SimulationResult
@@ -40,6 +41,15 @@ from .simulate import SimulationResult
 DEAD_BAT_DISTANCE_M = 2.5       # travels only this far -> smothered/defended
 WELL_STRUCK_DISTANCE_M = 12.0   # travels at least this far -> a genuine attacking shot
 SKIED_HEIGHT_M = 4.0            # rises above this -> mistimed, would likely be caught in a real match
+
+# Thresholds for the exit-velocity classifier below — a second, independent
+# way to reach the same NET_OUTCOMES categories, from a bat/ball exit speed
+# and launch angle instead of a full simulated flight's distance/height.
+# Same honesty as above: physically reasoned, not calibrated against real
+# measurements yet.
+DEAD_BAT_SPEED_MPS = 5.0        # barely came off the bat -> smothered/defended
+WELL_STRUCK_SPEED_MPS = 20.0    # ~72 km/h off the bat -> a genuine attacking shot
+SKIED_ELEVATION_DEG = 20.0      # steep enough to hang up -> mistimed, likely caught in a real match
 
 # No "six" tier: a real six needs 70m+ of carry, which cannot physically
 # happen inside an enclosed net of realistic length — well_struck is the
@@ -91,3 +101,75 @@ def classify_from_simulation(result: SimulationResult) -> NetOutcome:
     distance = abs(result.landing_point_m[0] - result.trajectory["x"].iloc[0])
     max_height = float(result.trajectory["z"].max())
     return classify_net_outcome(distance, max_height)
+
+
+@dataclass(frozen=True)
+class ExitVelocity:
+    """The ball's velocity vector at the instant of bat contact, in the
+    same (x=down-pitch, y=lateral, z=up) frame as ball.py's Delivery —
+    exactly what a calibrated stereo-camera rig triangulating the first
+    50-200ms after contact would measure, or what a simulated/toy batter
+    model can produce directly without needing to simulate a whole
+    post-contact flight just to get a distance and a height."""
+    vx: float
+    vy: float
+    vz: float
+
+    @property
+    def speed_mps(self) -> float:
+        return math.sqrt(self.vx ** 2 + self.vy ** 2 + self.vz ** 2)
+
+    @property
+    def elevation_deg(self) -> float:
+        """Launch angle above the horizontal. Mirrors Delivery.initial_state()'s
+        own theta/phi convention, inverted: negative -> a grounded/defensive
+        push, 0-15ish -> a hard flat drive, higher -> increasingly aerial."""
+        horizontal = math.hypot(self.vx, self.vy)
+        return math.degrees(math.atan2(self.vz, horizontal))
+
+    @property
+    def azimuth_deg(self) -> float:
+        """Horizontal direction relative to straight down the pitch (+x).
+        Positive -> off side, negative -> leg side, for a right-handed
+        batter — the same convention (and the same unmodelled limitation:
+        this doesn't know the batter's actual handedness) documented on
+        ball.py's Delivery and cv-pipeline's feature_extraction.py."""
+        return math.degrees(math.atan2(self.vy, self.vx))
+
+    def direction_label(self) -> str:
+        """A coarse, named shot-direction zone from azimuth_deg — assumes
+        the same fixed right-handed-batter convention as azimuth_deg
+        itself; genuinely wrong for a left-handed batter until that's
+        modelled (same honest gap as feature_extraction.py's side-on,
+        right-handed assumption)."""
+        az = self.azimuth_deg
+        if -15.0 <= az <= 15.0:
+            return "straight"
+        return "off side" if az > 15.0 else "leg side"
+
+
+def classify_exit_velocity(vx: float, vy: float, vz: float) -> tuple:
+    """
+    A second, independent path to the same NET_OUTCOMES categories:
+    classifies directly from the ball's exit velocity vector (speed +
+    launch angle) rather than a full simulated post-contact flight's
+    distance and max height. This is what a real stereo-camera rig (or a
+    simpler toy/simulated batter model) naturally produces — it doesn't
+    need net geometry or a flight simulation to say anything.
+
+    Elevation is checked first, same reasoning as classify_net_outcome():
+    a shot hit steeply upward is a real mistimed/catchable shot regardless
+    of how fast it left the bat.
+
+    Returns (NetOutcome, ExitVelocity) — the velocity object is returned
+    alongside so a caller can also show the raw speed/angle/direction
+    without recomputing it.
+    """
+    exit_velocity = ExitVelocity(vx, vy, vz)
+    if exit_velocity.elevation_deg >= SKIED_ELEVATION_DEG:
+        return NET_OUTCOMES["mistimed_skied"], exit_velocity
+    if exit_velocity.speed_mps < DEAD_BAT_SPEED_MPS:
+        return NET_OUTCOMES["dead_bat"], exit_velocity
+    if exit_velocity.speed_mps < WELL_STRUCK_SPEED_MPS:
+        return NET_OUTCOMES["controlled_placement"], exit_velocity
+    return NET_OUTCOMES["well_struck"], exit_velocity

@@ -207,3 +207,116 @@ def recover_missing_frames(
     trajectory = fit_ball_trajectory(detections, fps, **fit_kwargs)
     start, end = frame_range
     return {frame: trajectory.position_at(frame) for frame in range(start, end + 1)}
+
+
+# ---------------------------------------------------------------------------
+# Bat-ball impact segmentation: Incoming -> Impact -> Outgoing.
+#
+# A design for post-shot exit-trajectory extraction (stereo cameras,
+# ChArUco calibration, 3D triangulation) proposed alongside this project
+# described a clean three-phase model worth adopting regardless of
+# whether that hardware ever exists: a ball's flight before it's struck
+# tells you nothing about where it's going after, so once contact is
+# detected, the "incoming" history should be discarded and only the
+# "outgoing" phase fitted. The two functions below implement that model
+# in 2D image-space (this module's only domain — no camera calibration,
+# no real 3D), working on whatever per-frame detections exist, real or
+# synthetic. Detecting contact from velocity discontinuity, and trimming
+# a net-collision-corrupted tail via an acceleration spike, are both
+# techniques from that same design — genuinely useful with a single
+# camera's pixel coordinates, not only a calibrated stereo rig.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ImpactSplit:
+    """One detection sequence split at the moment of bat-ball contact.
+    `incoming` and `outgoing` are disjoint, frame-ordered slices of the
+    input; `impact_frame` is the frame index the split happened at."""
+    incoming: List[BallDetection]
+    outgoing: List[BallDetection]
+    impact_frame: int
+
+
+def _frame_velocities(ordered: List[BallDetection]) -> List[Tuple[int, float, float]]:
+    """Per-consecutive-pair finite-difference velocity (px/frame) between
+    already-frame-sorted detections. Needs reasonably dense detections —
+    a large gap between two consecutive entries makes the resulting
+    "velocity" over that gap noisy or meaningless; this doesn't correct
+    for that, only computes what's asked of it."""
+    velocities = []
+    for a, b in zip(ordered, ordered[1:]):
+        dt_frames = b.frame_index - a.frame_index
+        if dt_frames <= 0:
+            continue
+        velocities.append((b.frame_index, (b.x_px - a.x_px) / dt_frames, (b.y_px - a.y_px) / dt_frames))
+    return velocities
+
+
+def find_impact_and_split(
+    detections: List[BallDetection],
+    velocity_jump_threshold_px_per_frame: float,
+) -> Optional[ImpactSplit]:
+    """
+    Estimates frame-to-frame velocity from consecutive detections and
+    marks the first point where it changes abruptly — a jump in (vx, vy)
+    between consecutive estimates at or past
+    `velocity_jump_threshold_px_per_frame` — as bat-ball contact.
+    Everything from that frame on becomes `outgoing`; everything before
+    it becomes `incoming` and should be discarded by the caller, per the
+    Incoming -> Impact -> Outgoing model.
+
+    Returns None — not an exception — when there's too little data (fewer
+    than 2 velocity estimates, i.e. fewer than 3 detections) or no jump
+    clears the threshold. "No clear impact found yet" is a normal,
+    expected state (e.g. still watching a delivery in flight, or a ball
+    that was never struck at all), not an error the caller should treat
+    as a bug.
+    """
+    ordered = sorted(detections, key=lambda d: d.frame_index)
+    velocities = _frame_velocities(ordered)
+    if len(velocities) < 2:
+        return None
+
+    for (_, prev_vx, prev_vy), (frame, vx, vy) in zip(velocities, velocities[1:]):
+        jump = ((vx - prev_vx) ** 2 + (vy - prev_vy) ** 2) ** 0.5
+        if jump >= velocity_jump_threshold_px_per_frame:
+            return ImpactSplit(
+                incoming=[d for d in ordered if d.frame_index < frame],
+                outgoing=[d for d in ordered if d.frame_index >= frame],
+                impact_frame=frame,
+            )
+    return None
+
+
+def trim_before_deceleration_spike(
+    detections: List[BallDetection],
+    accel_jump_threshold_px_per_frame2: float,
+) -> List[BallDetection]:
+    """
+    Trims a (typically post-impact) detection sequence at the first sign
+    of the ball hitting the net: net resistance decelerates a ball far
+    more sharply than gravity or drag alone would, so a spike in the
+    magnitude of acceleration (the second derivative of position, in
+    px/frame^2) past `accel_jump_threshold_px_per_frame2` marks where net
+    contact corrupted the data. Returns only the frames strictly before
+    that spike, so a subsequent fit_ball_trajectory() call isn't
+    contaminated by post-net-contact points.
+
+    Returns the input (sorted by frame) unchanged if no spike is found —
+    nothing to trim — including when there's too little data (fewer than
+    3 detections) to estimate any acceleration at all.
+    """
+    ordered = sorted(detections, key=lambda d: d.frame_index)
+    velocities = _frame_velocities(ordered)
+    if len(velocities) < 2:
+        return ordered
+
+    for (prev_frame, prev_vx, prev_vy), (frame, vx, vy) in zip(velocities, velocities[1:]):
+        dt_frames = frame - prev_frame
+        if dt_frames <= 0:
+            continue
+        accel_mag = (((vx - prev_vx) / dt_frames) ** 2 + ((vy - prev_vy) / dt_frames) ** 2) ** 0.5
+        if accel_mag >= accel_jump_threshold_px_per_frame2:
+            return [d for d in ordered if d.frame_index < frame]
+    return ordered
