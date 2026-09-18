@@ -25,6 +25,7 @@ from .orchestrator import MachineOrchestrator, OrchestratorEvent
 from .release_sensor import ReleaseSensor, SimulatedReleaseSensor, SpeedCalibrator, ReleaseMeasurement
 from .impact_sensor import (
     ImpactSensor, SimulatedImpactSensor, ImpactSensorOutcomeObserver, NoContactDetected,
+    VelocitySensor, SimulatedVelocitySensor, VelocitySensorOutcomeObserver,
 )
 
 __all__ = [
@@ -35,4 +36,5 @@ __all__ = [
     "MachineOrchestrator", "OrchestratorEvent",
     "ReleaseSensor", "SimulatedReleaseSensor", "SpeedCalibrator", "ReleaseMeasurement",
     "ImpactSensor", "SimulatedImpactSensor", "ImpactSensorOutcomeObserver", "NoContactDetected",
+    "VelocitySensor", "SimulatedVelocitySensor", "VelocitySensorOutcomeObserver",
 ]

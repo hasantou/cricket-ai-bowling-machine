@@ -19,6 +19,7 @@ import json
 import math
 import os
 import random
+import time
 import sys
 import tempfile
 
@@ -33,6 +34,10 @@ from neural_scorer import NeuralMasteryScorer
 from recommender import recommend_next_styles, explain_recommendation
 from styles import STYLE_LIBRARY, STYLE_BY_KEY
 from video_pipeline import estimate_outcomes_from_video
+from pose_estimation import PoseEstimator
+from outcome_bridge import VisionOutcomeEstimator
+from live_video_source import LiveVideoSource
+from live_delivery_detector import LiveDeliveryDetector
 from cricket_trajectory import (
     BallProperties, Environment, PlayerProfile, expected_success, OUTCOME_SCORES,
     Scorecard, classify_delivery_legality, run_simulation,
@@ -44,8 +49,8 @@ from machine_control.controller import SimulatedMachineController
 from machine_control.safety import SafeMachineController, SafetyLimits, SafetyViolation
 from machine_control.serial_controller import SerialCommunicationError, SerialMachineController
 from machine_control.release_sensor import SimulatedReleaseSensor, SpeedCalibrator
-from machine_control.impact_sensor import SimulatedImpactSensor, ImpactSensorOutcomeObserver
-from cricket_trajectory.net_outcome import classify_net_outcome, NET_OUTCOMES
+from machine_control.impact_sensor import SimulatedVelocitySensor, VelocitySensorOutcomeObserver
+from cricket_trajectory.net_outcome import classify_exit_velocity, NET_OUTCOMES
 try:
     from serial.tools import list_ports as _serial_list_ports
 except ImportError:
@@ -139,23 +144,32 @@ def _margin_for_target(target_success: float) -> float:
     return 400.0 * math.log10((1.0 - target_success) / target_success)
 
 
-def _simulate_impact_reading(expected_success_pct: float, rng: random.Random):
+def _simulate_impact_velocity(expected_success_pct: float, rng: random.Random):
     """A toy, clearly-labelled stand-in for a real post-contact sensor
-    reading — not a real batter model. Returns (distance_m, height_m), or
-    None for "no contact", biased so a delivery the batter was expected
-    to handle comfortably (high expected_success) skews toward
-    well-struck distances, and a delivery they were expected to struggle
-    with skews toward dead-bat/mistimed outcomes. Exists to demonstrate
-    ImpactSensorOutcomeObserver's real classification logic end-to-end in
-    this UI, not to claim any predictive accuracy about real batting.
+    reading — not a real batter model. Returns an exit velocity vector
+    (vx, vy, vz) in m/s (ball.py's x=down-pitch, y=lateral, z=up frame),
+    or None for "no contact". Biased so a delivery the batter was
+    expected to handle comfortably (high expected_success) skews toward
+    higher exit speed, and a delivery they were expected to struggle with
+    skews toward a gentler, more defensive speed. Exists to demonstrate
+    VelocitySensorOutcomeObserver's real classification logic end-to-end
+    in this UI — the same code path a real stereo-camera exit-trajectory
+    rig would feed — not to claim any predictive accuracy about real
+    batting.
     """
     if rng.random() < (1.0 - expected_success_pct) * 0.25:
         return None  # simulated miss
-    mean_distance = 2.0 + expected_success_pct * 13.0
-    distance = max(0.0, rng.gauss(mean_distance, 3.0))
+    mean_speed = 3.0 + expected_success_pct * 22.0
+    speed = max(0.0, rng.gauss(mean_speed, 4.0))
     skied_chance = (1.0 - expected_success_pct) * 0.2
-    height = rng.gauss(4.5, 1.0) if rng.random() < skied_chance else max(0.0, rng.gauss(1.2, 0.6))
-    return distance, height
+    elevation_deg = rng.gauss(28.0, 6.0) if rng.random() < skied_chance else rng.gauss(2.0, 5.0)
+    azimuth_deg = rng.uniform(-70.0, 70.0)
+    theta = math.radians(elevation_deg)
+    phi = math.radians(azimuth_deg)
+    vx = speed * math.cos(theta) * math.cos(phi)
+    vy = speed * math.cos(theta) * math.sin(phi)
+    vz = speed * math.sin(theta)
+    return vx, vy, vz
 
 
 @st.cache_data(show_spinner="Running pose estimation on the clip...")
@@ -169,6 +183,49 @@ def _analyse_clip(video_bytes: bytes, suffix: str):
         tmp_path = tmp.name
     try:
         return estimate_outcomes_from_video(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+
+@st.cache_data(show_spinner="Processing frame-by-frame, as if streaming from a camera on the machine...")
+def _analyse_clip_live(video_bytes: bytes, suffix: str):
+    """Runs the SAME uploaded clip through the live-camera-shaped pipeline
+    (cv-pipeline/live_video_source.py + live_delivery_detector.py)
+    instead of the batch call above — one frame at a time, exactly the
+    code path validated against real footage in
+    cv-pipeline/demo_live_delivery_detection.py (see that script and
+    cv-pipeline/README.md for the three real bugs found and fixed doing
+    that). There's no real camera on Streamlit Cloud to point this at;
+    feeding it an uploaded file frame-by-frame is the same honest stand-in
+    that validation script uses — a file and a live camera are identical
+    to cv2.VideoCapture.read() in a loop.
+
+    Returns (estimates, frames_processed, frames_with_a_person, elapsed_s, fps).
+    """
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(video_bytes)
+        tmp_path = tmp.name
+    try:
+        source = LiveVideoSource(device=tmp_path)
+        fps = source.fps
+        detector = LiveDeliveryDetector(fps=fps, buffer_seconds=15.0)
+        vision_estimator = VisionOutcomeEstimator()
+        estimates = []
+        frame_count = 0
+        person_frame_count = 0
+        t0 = time.perf_counter()
+        with PoseEstimator() as estimator:
+            for frame in source.frames():
+                frame_count += 1
+                landmarks = estimator.extract_landmarks_from_one_live_frame(frame, fps)
+                if landmarks is not None:
+                    person_frame_count += 1
+                for delivery in detector.add_frame(landmarks):
+                    window_landmarks = detector.buffered_landmarks()[delivery.start:delivery.end]
+                    estimates.append(vision_estimator.estimate(window_landmarks, fps=fps))
+        elapsed = time.perf_counter() - t0
+        source.close()
+        return estimates, frame_count, person_frame_count, elapsed, fps
     finally:
         os.unlink(tmp_path)
 
@@ -233,7 +290,7 @@ if "traj_speed_calibrator" not in st.session_state:
         st.session_state.traj_wheel_machine, min_samples=5
     )
 if "traj_impact_sensor" not in st.session_state:
-    st.session_state.traj_impact_sensor = SimulatedImpactSensor()
+    st.session_state.traj_impact_sensor = SimulatedVelocitySensor()
 
 with st.sidebar:
     st.header("Session settings")
@@ -476,11 +533,36 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                 "then log them all in one go."
             )
             clip = st.file_uploader("Delivery clip (one ball or a whole session)", type=["mp4", "mov", "avi", "mkv"])
+            processing_mode = st.radio(
+                "Processing mode",
+                ["Batch (whole clip at once)", "Live (frame-by-frame, as if streaming from the machine's camera)"],
+                horizontal=True,
+            )
             vision_estimates = None
             if clip is not None:
                 suffix = os.path.splitext(clip.name)[1]
                 try:
-                    vision_estimates = _analyse_clip(clip.getvalue(), suffix)
+                    if processing_mode.startswith("Batch"):
+                        vision_estimates = _analyse_clip(clip.getvalue(), suffix)
+                    else:
+                        vision_estimates, n_frames, n_person_frames, elapsed, live_fps = _analyse_clip_live(
+                            clip.getvalue(), suffix
+                        )
+                        st.caption(
+                            f"Live pipeline: {n_frames} frames processed ({n_person_frames} with a person "
+                            f"detected) in {elapsed:.1f}s — {n_frames/elapsed:.0f} fps sustained, at "
+                            f"{live_fps:.0f}fps source. Uses `cv-pipeline/live_video_source.py` + "
+                            "`live_delivery_detector.py`, the exact code validated against real footage "
+                            "in `demo_live_delivery_detection.py` (see `cv-pipeline/README.md` for the "
+                            "three real bugs found and fixed doing that)."
+                        )
+                        if not vision_estimates:
+                            st.warning(
+                                "No delivery confirmed yet from this clip in live mode — either no clear "
+                                "swing was found, or (for a clip near the buffer's ~15s window) its "
+                                "follow-through hadn't finished within the clip, which a real continuous "
+                                "camera would never hit. Try Batch mode on the same clip to compare."
+                            )
                 except FileNotFoundError:
                     st.error(
                         "Pose model not downloaded yet. Run "
@@ -727,36 +809,43 @@ else:
                         st.rerun()
                 else:
                     st.caption(
-                        "`machine_control/impact_sensor.py` — a simple post-contact sensor reading "
-                        "(distance, height) instead of visually tracking the ball through the shot, "
-                        "which `cv-pipeline/motion_ball_detector.py` found genuinely hard on real "
-                        "footage. The reading below is a **toy simulated batter model**, not a real "
-                        "one — it exists to demonstrate the real classification code path end to end."
+                        "`machine_control/impact_sensor.py`'s `VelocitySensorOutcomeObserver` — an "
+                        "exit-velocity reading (speed, launch angle, direction) instead of visually "
+                        "tracking the ball through the shot, which `cv-pipeline/motion_ball_detector.py` "
+                        "found genuinely hard on real footage. This is exactly what a stereo-camera "
+                        "post-shot trajectory rig would measure — see `trajectory-engine/cricket_trajectory/"
+                        "net_outcome.py`'s `ExitVelocity`. The reading below is a **toy simulated batter "
+                        "model**, not a real one — it exists to demonstrate the real classification code "
+                        "path end to end."
                     )
                     if "traj_sensor_reading" not in st.session_state:
                         if st.button("Generate sensor reading (simulated)", type="primary"):
                             rng = random.Random()
-                            reading = _simulate_impact_reading(pre_expected, rng)
+                            reading = _simulate_impact_velocity(pre_expected, rng)
                             sensor = st.session_state.traj_impact_sensor
                             sensor.arm(reading)
-                            observer = ImpactSensorOutcomeObserver(sensor)
+                            observer = VelocitySensorOutcomeObserver(sensor)
                             resolved_outcome = observer.observe(next_ball, ball)
-                            label = (
-                                classify_net_outcome(*reading).label if reading is not None
-                                else NET_OUTCOMES["no_contact"].label
-                            )
+                            if reading is not None:
+                                outcome_obj, exit_velocity = classify_exit_velocity(*reading)
+                                label = outcome_obj.label
+                            else:
+                                exit_velocity = None
+                                label = NET_OUTCOMES["no_contact"].label
                             st.session_state.traj_sensor_reading = {
-                                "reading": reading, "label": label, "outcome": resolved_outcome,
+                                "exit_velocity": exit_velocity, "label": label, "outcome": resolved_outcome,
                             }
                             st.rerun()
                     else:
                         r = st.session_state.traj_sensor_reading
-                        if r["reading"] is None:
+                        ev = r["exit_velocity"]
+                        if ev is None:
                             st.warning("Sensor reading: no contact detected.")
                         else:
-                            distance_m, height_m = r["reading"]
                             st.info(
-                                f"Sensor reading: distance={distance_m:.1f}m, height={height_m:.1f}m "
+                                f"Sensor reading: **{ev.speed_mps:.1f} m/s** ({ev.speed_mps*3.6:.0f} km/h), "
+                                f"elevation **{ev.elevation_deg:.0f}°**, "
+                                f"direction **{ev.direction_label()}** ({ev.azimuth_deg:+.0f}°) "
                                 f"→ classified as **{r['label']}**"
                             )
                         if st.button("Log delivery", type="primary"):
@@ -853,7 +942,15 @@ with st.expander("What's real here vs. what's a placeholder"):
         "`cv-pipeline/README.md`). That confirms the pipeline measures *something* real, "
         "not that the something is *correct* — nobody has watched the source footage to "
         "confirm the 26 detections are all genuine swings, and no coach's independent "
-        "verdict has checked the on_time/footwork numbers yet.\n"
+        "verdict has checked the on_time/footwork numbers yet. **Processing mode** lets "
+        "you pick Batch (the whole clip processed at once) or Live — the exact "
+        "frame-by-frame pipeline (`cv-pipeline/live_video_source.py` + "
+        "`live_delivery_detector.py`) meant for a camera mounted on the machine, "
+        "validated by playing real clips back as if live and matching the batch result "
+        "exactly on every delivery a continuous camera would also complete (three real "
+        "bugs found and fixed doing that — see `cv-pipeline/README.md`). No real camera "
+        "exists yet; Live mode here is fed the same uploaded file, same honest stand-in "
+        "the validation itself uses.\n"
         "- **Placeholder for this MVP, by design**: shot outcome (middled/edged/missed/...) "
         "is always entered by a human in the style-library engine — ball tracking against "
         "the bat isn't built.\n"
@@ -878,10 +975,11 @@ with st.expander("What's real here vs. what's a placeholder"):
         "simulated cheap sensor and corrects `machine.py`'s RPM-to-speed mapping over "
         "time — watch the belief converge toward the (simulated) true value below the "
         "command log. **Simulated impact sensor** (an alternative to manual outcome entry) "
-        "classifies the shot from a simple simulated post-contact reading (distance, height) "
-        "through the real, already-tested `net_outcome.py` logic. Both are real, tested "
-        "software (`machine-control/machine_control/release_sensor.py` and "
-        "`impact_sensor.py`) — run against simulated sensors, since no real ones exist yet; "
-        "the impact-sensor reading itself comes from a clearly-labelled toy batter model, "
-        "not a claim about real batting."
+        "classifies the shot from a simulated exit-velocity reading (speed, launch angle, "
+        "direction) — exactly what a stereo-camera post-shot trajectory rig would measure — "
+        "through the real, already-tested `net_outcome.py` `classify_exit_velocity()` logic. "
+        "All three are real, tested software (`machine-control/machine_control/"
+        "release_sensor.py` and `impact_sensor.py`) — run against simulated sensors, since "
+        "no real ones exist yet; the impact-sensor reading itself comes from a "
+        "clearly-labelled toy batter model, not a claim about real batting."
     )

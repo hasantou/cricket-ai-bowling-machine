@@ -24,12 +24,12 @@ machine_control/
   serial_controller.py   SerialMachineController — a real driver, speaks PROTOCOL.md
   safety.py              SafeMachineController — hard limits + kill-switch, wraps any controller
   outcome_observer.py    OutcomeObserver (abstract) + ScriptedOutcomeObserver
-  impact_sensor.py       ImpactSensor (abstract) + ImpactSensorOutcomeObserver — a real OutcomeObserver
+  impact_sensor.py       ImpactSensor + VelocitySensor (abstract) — two real OutcomeObserver implementations
   release_sensor.py      ReleaseSensor (abstract) + SpeedCalibrator — measures and corrects machine.py's RPM->speed mapping
   orchestrator.py         MachineOrchestrator — the actual decide->command->sense->score loop
   session_store.py       JSON save/load for PlayerProfile and Scorecard (resumability)
 PROTOCOL.md              The serial wire protocol SerialMachineController speaks
-tests/                   57 tests covering every piece above
+tests/                   63 tests covering every piece above
 demo_orchestrator.py     runnable end-to-end demo against simulated hardware
 ```
 
@@ -55,16 +55,22 @@ neither exists yet (see `PROTOCOL.md` for what's deliberately left open).
 
 **`OutcomeObserver`** (`outcome_observer.py`) mirrors this on the sensing
 side: `observe(delivery, ball) -> outcome`. `ScriptedOutcomeObserver`
-replays a fixed sequence for tests and demos. `ImpactSensorOutcomeObserver`
-(`impact_sensor.py`) is the first *real* implementation, built on a
-different idea from ball tracking: rather than trying to visually resolve
-a small fast ball (the approach `cv-pipeline/motion_ball_detector.py`
-tried against real footage and found genuinely hard), it wraps a much
-simpler post-contact sensor — trip-beams or a pressure-sensitive net
-panel giving just (distance, height) — and runs that straight through
-`trajectory-engine/cricket_trajectory/net_outcome.py`'s already-tested
-classification logic. No real sensor exists yet; `SimulatedImpactSensor`
-stands in for one.
+replays a fixed sequence for tests and demos. `impact_sensor.py` has the
+first two *real* implementations, built on a different idea from ball
+tracking: rather than trying to visually resolve a small fast ball (the
+approach `cv-pipeline/motion_ball_detector.py` tried against real footage
+and found genuinely hard), each wraps a much simpler post-contact
+sensor. `ImpactSensorOutcomeObserver` wraps trip-beams or a
+pressure-sensitive net panel giving (distance, height).
+`VelocitySensorOutcomeObserver` wraps a sensor that reports an exit
+velocity vector directly — exactly what a stereo-camera post-shot
+trajectory rig (triangulated 3D position over the first 50-200ms after
+contact, differentiated for velocity) would produce. Both run their
+reading straight through `trajectory-engine/cricket_trajectory/net_outcome.py`'s
+already-tested classification logic (`classify_net_outcome()` and
+`classify_exit_velocity()` respectively) rather than a second decision
+path. No real sensor exists yet; `SimulatedImpactSensor` and
+`SimulatedVelocitySensor` stand in for one.
 
 **`release_sensor.py`** closes a different, pre-contact gap: unlike a
 human bowler, this system commands the delivery it's about to make, so it
@@ -118,16 +124,18 @@ losing everything when the process ends.
 python3 -m pytest machine-control/tests/ -v
 ```
 
-57 tests: the simulated controller's readiness/stop semantics, every
+63 tests: the simulated controller's readiness/stop semantics, every
 safety-limit rejection path (including a real bug this caught — `reset()`
 originally only cleared this layer's own flag, not the inner controller's
 stopped state, which would have silently left the machine stuck even
 though the safety layer reported itself re-enabled), the scripted
 observer, session-store round-trips, the orchestrator's full run loop
 including a safety-violation stopping it immediately, the serial
-protocol's encode/decode logic against a fake connection, and — the two
+protocol's encode/decode logic against a fake connection, and — the
 sensor modules — `ImpactSensorOutcomeObserver` classifying every net
-outcome correctly from raw (distance, height) readings, and
+outcome correctly from raw (distance, height) readings,
+`VelocitySensorOutcomeObserver` doing the same from an exit-velocity
+vector (speed, elevation, azimuth) via `net_outcome.classify_exit_velocity()`, and
 `SpeedCalibrator` recovering a machine's true (initially unknown)
 speed_efficiency from noisy simulated measurements and confirming the
 correction actually improves future delivery accuracy, not just that the

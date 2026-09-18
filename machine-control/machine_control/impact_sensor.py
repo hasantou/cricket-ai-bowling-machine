@@ -23,7 +23,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 from cricket_trajectory.ball import BallProperties, Delivery
-from cricket_trajectory.net_outcome import NET_OUTCOMES, classify_net_outcome
+from cricket_trajectory.net_outcome import NET_OUTCOMES, classify_exit_velocity, classify_net_outcome
 
 from .outcome_observer import OutcomeObserver
 
@@ -86,3 +86,62 @@ class ImpactSensorOutcomeObserver(OutcomeObserver):
         except NoContactDetected:
             return NET_OUTCOMES["no_contact"].adaptive_outcome
         return classify_net_outcome(distance_m, height_m).adaptive_outcome
+
+
+class VelocitySensor(ABC):
+    """A second, independent sensing modality for the same post-contact
+    problem: instead of distance/height (ImpactSensor above), this
+    measures the ball's exit velocity vector directly — exactly what the
+    stereo-camera exit-trajectory design discussed for this project would
+    produce (triangulated 3D position over the first 50-200ms after
+    contact, fit to a kinematic curve, differentiated for velocity),
+    without needing a full post-contact flight simulated or measured."""
+
+    @abstractmethod
+    def measure_exit_velocity(self) -> Tuple[float, float, float]:
+        """Returns (vx, vy, vz) in m/s, in the same (x=down-pitch,
+        y=lateral, z=up) frame as ball.py's Delivery. Raises
+        NoContactDetected if the batter didn't hit the ball."""
+
+
+class SimulatedVelocitySensor(VelocitySensor):
+    """Stands in for real hardware (a stereo rig, or any sensor that can
+    report an exit velocity vector): reports a pre-armed (vx, vy, vz)
+    reading, or raises NoContactDetected if armed with `None`."""
+
+    def __init__(self):
+        self._next_reading = "unset"
+
+    def arm(self, reading: Optional[Tuple[float, float, float]]) -> None:
+        """Test/demo helper: `reading` is (vx, vy, vz) in m/s, or None to
+        simulate no contact on the next measure_exit_velocity() call."""
+        self._next_reading = reading
+
+    def measure_exit_velocity(self) -> Tuple[float, float, float]:
+        if self._next_reading == "unset":
+            raise RuntimeError("SimulatedVelocitySensor.arm() must be called before measuring.")
+        reading = self._next_reading
+        self._next_reading = "unset"
+        if reading is None:
+            raise NoContactDetected("No bat/ball contact detected for this delivery.")
+        return reading
+
+
+class VelocitySensorOutcomeObserver(OutcomeObserver):
+    """A real OutcomeObserver implementation built on exit velocity
+    instead of distance/height — wraps any VelocitySensor and runs its
+    reading through net_outcome.classify_exit_velocity(), the same
+    already-tested classification logic ImpactSensorOutcomeObserver
+    uses, just entered from the other of the two independent paths that
+    module documents."""
+
+    def __init__(self, sensor: VelocitySensor):
+        self._sensor = sensor
+
+    def observe(self, delivery: Delivery, ball: BallProperties) -> str:
+        try:
+            vx, vy, vz = self._sensor.measure_exit_velocity()
+        except NoContactDetected:
+            return NET_OUTCOMES["no_contact"].adaptive_outcome
+        outcome, _exit_velocity = classify_exit_velocity(vx, vy, vz)
+        return outcome.adaptive_outcome

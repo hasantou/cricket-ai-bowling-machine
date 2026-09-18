@@ -2,11 +2,14 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "trajectory-engine"))
 
 import pytest
 from cricket_trajectory.ball import BallProperties, Delivery
+from cricket_trajectory.net_outcome import DEAD_BAT_SPEED_MPS, WELL_STRUCK_SPEED_MPS
 from machine_control.impact_sensor import (
     ImpactSensorOutcomeObserver, NoContactDetected, SimulatedImpactSensor,
+    SimulatedVelocitySensor, VelocitySensorOutcomeObserver,
 )
 
 BALL = BallProperties()
@@ -68,3 +71,47 @@ def test_arms_only_once_then_requires_rearming():
     observer.observe(DELIVERY, BALL)
     with pytest.raises(RuntimeError):
         sensor.measure_impact()
+
+
+def make_velocity_observer():
+    sensor = SimulatedVelocitySensor()
+    return VelocitySensorOutcomeObserver(sensor), sensor
+
+
+def test_velocity_sensor_raises_if_measured_before_arming():
+    sensor = SimulatedVelocitySensor()
+    with pytest.raises(RuntimeError):
+        sensor.measure_exit_velocity()
+
+
+def test_velocity_no_contact_classifies_as_missed():
+    observer, sensor = make_velocity_observer()
+    sensor.arm(None)
+    assert observer.observe(DELIVERY, BALL) == "missed"
+
+
+def test_velocity_dead_bat_on_low_speed():
+    observer, sensor = make_velocity_observer()
+    sensor.arm((DEAD_BAT_SPEED_MPS - 1.0, 0.0, 0.0))
+    assert observer.observe(DELIVERY, BALL) == "defended"
+
+
+def test_velocity_well_struck_on_high_speed():
+    observer, sensor = make_velocity_observer()
+    sensor.arm((WELL_STRUCK_SPEED_MPS + 5.0, 0.0, 0.0))
+    assert observer.observe(DELIVERY, BALL) == "boundary"
+
+
+def test_velocity_skied_on_steep_elevation_regardless_of_speed():
+    observer, sensor = make_velocity_observer()
+    # Fast enough to otherwise read as well_struck, but launched steeply.
+    sensor.arm((20.0, 0.0, 15.0))
+    assert observer.observe(DELIVERY, BALL) == "edged"
+
+
+def test_velocity_sensor_arms_only_once_then_requires_rearming():
+    observer, sensor = make_velocity_observer()
+    sensor.arm((10.0, 0.0, 0.0))
+    observer.observe(DELIVERY, BALL)
+    with pytest.raises(RuntimeError):
+        sensor.measure_exit_velocity()
