@@ -84,7 +84,7 @@ to target. That's a decision, not an engineering task — see `ROADMAP.md`.
 
 ## Status
 
-139 automated tests passing across all four Python packages
+151 automated tests passing across all four Python packages
 (`adaptation-engine/`, `cv-pipeline/`, `trajectory-engine/`, `machine-control/`).
 What that number covers, and what it doesn't:
 
@@ -117,11 +117,19 @@ What that number covers, and what it doesn't:
   `impact_sensor.py` classifies shot outcome from a simple post-contact
   sensor reading (distance, height) rather than tracking the ball
   visually — both real, tested software, against simulated sensors, since
-  no physical sensor exists yet either. Also not built: any
-  live/continuous camera feed (today's CV pipeline processes an uploaded
-  clip, not a running feed), and any real hardware connection —
-  `machine-control/` has a real serial driver and documented protocol
-  ready for a microcontroller to speak, but no physical machine has been
+  no physical sensor exists yet either. The live-camera side is
+  real, tested software now too — `cv-pipeline/live_video_source.py` and
+  `live_delivery_detector.py` process a continuous frame stream instead
+  of an uploaded file, validated by playing real WhatsApp clips back
+  frame by frame and matching the existing batch pipeline exactly on
+  every delivery a genuinely continuous camera would also complete
+  (three real bugs were found and fixed doing this — see
+  `cv-pipeline/README.md`). What's still missing is the camera itself —
+  `LiveVideoSource` opening a real device is unexercised, identical in
+  shape to opening a file but unexercised all the same — and any real
+  hardware connection — `machine-control/` has a real serial driver and
+  documented protocol ready for a microcontroller to speak, but no
+  physical machine has been
   chosen, so nothing is plugged in yet.
 
 ## Start here

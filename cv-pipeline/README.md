@@ -146,6 +146,78 @@ constant.
   are tested against synthetic detection sequences
   (`tests/test_ball_tracking.py`).
 
+## Real-time readiness: a camera mounted on the machine, not an uploaded file
+
+Everything above this point processes a whole pre-recorded clip in one
+batch call. That's fine for "upload a session afterward," but the actual
+target is a camera physically mounted on the machine, running
+continuously — so this was built and, critically, **validated against
+real footage played back frame by frame as if it were live**, not just
+synthetic data, because a file and a live camera look identical to
+`cv2.VideoCapture.read()` in a loop.
+
+- **`live_video_source.py`** — `LiveVideoSource` wraps a camera index,
+  stream URL, or file (all identical to `cv2.VideoCapture`) behind one
+  `frames()` generator, or accepts an injected frame source for testing
+  without hardware.
+- **`live_delivery_detector.py`** — `LiveDeliveryDetector` wraps
+  `delivery_segmentation.py`'s existing batch peak-finding logic (not a
+  second copy of it) for a continuously-arriving stream, returning
+  `DetectedDelivery` objects with both buffer-relative coordinates (to
+  slice the current buffer right away) and absolute coordinates (stable
+  across the whole session, safe to log or compare).
+- **`pose_estimation.py`** gained `extract_landmarks_from_one_live_frame()`
+  — the same real MediaPipe model, called once per live frame with a
+  correctly-incrementing internal clock (see below for why that needed
+  to be a separate method).
+- **`demo_live_delivery_detection.py`** — plays a real WhatsApp clip back
+  frame by frame through the live pipeline and cross-checks the result
+  against the existing batch pipeline on the same clip. Run against 3 of
+  the real clips already used elsewhere in this project's testing; all 3
+  now match the batch pipeline exactly on every delivery a genuinely
+  continuous camera would also have completed.
+
+**Three real bugs were found this way, not assumed up front** — each one
+only showed up on real footage, not synthetic tests, and each is now a
+regression test:
+
+1. Calling the batch pose-extraction method once per single live frame
+   compressed MediaPipe's internal clock to 1ms between frames instead of
+   a real ~33ms frame interval, since that method's "advance by 1ms"
+   convention is meant for starting a new, unrelated clip, not "the next
+   frame arrived shortly after." This measurably changed which deliveries
+   got detected. Fixed with a dedicated live method that advances the
+   clock by a real frame interval every call.
+2. `find_delivery_windows()` is a *global* greedy algorithm — the single
+   biggest wrist-speed peak anywhere in the buffer wins, suppressing a
+   2-second radius around it. Re-running it on a growing live buffer
+   means an early, smaller peak can look "complete" (enough trailing
+   context exists for *it*) before the real, bigger swing nearby has even
+   happened — and once it does, the batch algorithm would have suppressed
+   the smaller one entirely. Fixed by not trusting a peak until the
+   buffer extends the full 2-second suppression radius past it, not just
+   the ~0.8s window needed to draw its box.
+3. On a longer real session, the buffer-relative "already reported"
+   marker silently drained toward zero during quiet gaps between
+   deliveries as old frames got trimmed off the front — so an old,
+   unchanged delivery already sitting in the buffer could look unreported
+   again and fire a second (on one real clip: sixth) time. Fixed by
+   tracking "reported up to" as an absolute, monotonically-increasing
+   position that trimming can never erode — which is also why
+   `DetectedDelivery` exposes both coordinate systems explicitly instead
+   of one bare tuple: this project's own validation script mixed the two
+   up on its first attempt, which is exactly the mistake a real caller
+   could make too.
+
+**What this does and doesn't prove**: the pipeline correctly detects
+deliveries and computes matching footwork/timing results in real time
+from real footage, sustained around 28-30fps on ordinary CPU inference —
+comfortably fast enough for this project's actual timing budget (a
+delivery roughly every 7-11 seconds, per BOLA's own spec). It does *not*
+prove a real camera mounted on a real machine works, since no such camera
+exists yet — `LiveVideoSource` opening a real device is unexercised code,
+identical in shape to opening a file, but unexercised all the same.
+
 ## What isn't built yet
 
 - A real ball detector — `ball_tracking.py` above assumes one exists;
@@ -179,6 +251,7 @@ constant.
 python cv-pipeline/pose_estimation.py          # one-time: downloads the pretrained model
 python -c "from video_pipeline import estimate_outcomes_from_video; \
            print(estimate_outcomes_from_video('path/to/clip.mp4'))"  # a whole session works, not just one ball
+python cv-pipeline/demo_live_delivery_detection.py path/to/clip.mp4   # the live-shaped pipeline, validated against the same clip's batch result
 ```
 
 ## Tests
@@ -187,7 +260,7 @@ python -c "from video_pipeline import estimate_outcomes_from_video; \
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-45 tests: feature-extraction math (including `footwork_lead_seconds`) and
+57 tests: feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the
@@ -206,7 +279,13 @@ elongated sliver, per-frame best-candidate selection, an ROI correctly
 excluding an out-of-region candidate while keeping coordinates in the
 original frame's space, a clear error on a missing file), and
 `find_impact_and_split()`/`trim_before_deceleration_spike()` against
-synthetic velocity-discontinuity and deceleration-spike sequences. Its
-real-footage evaluation (see above) was run by hand, not as part of this
-suite, since there's no ground truth to assert against — only visual
-inspection.
+synthetic velocity-discontinuity and deceleration-spike sequences.
+`motion_ball_detector.py`'s real-footage evaluation (see above) was run
+by hand, not as part of this suite, since there's no ground truth to
+assert against — only visual inspection. `live_video_source.py` and
+`live_delivery_detector.py` add 12 more against synthetic streams,
+including three regression tests locking in the real bugs described
+above — but the real proof for the live pipeline is
+`demo_live_delivery_detection.py` run against actual footage (see that
+section), which needs a real clip and the downloaded pose model, so it
+isn't part of the automated `pytest` run.

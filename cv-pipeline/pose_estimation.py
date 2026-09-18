@@ -86,6 +86,36 @@ class PoseEstimator:
                 results.append(landmarks)
         return results
 
+    def extract_landmarks_from_one_live_frame(self, frame_bgr, fps: float):
+        """Live counterpart to extract_landmarks_from_frames(), for a
+        camera mounted on the machine calling this once per frame as it
+        arrives, rather than a whole pre-recorded clip processed in one
+        batch call.
+
+        A real, found-by-testing-against-real-footage bug this exists to
+        avoid: calling extract_landmarks_from_frames([frame], fps) once
+        per live frame looks correct but isn't — that method's "advance
+        by 1ms" convention between calls is meant for starting a new,
+        unrelated CLIP, not for "the next frame arrived ~1000/fps ms
+        later." Compressing every live frame's timestamp to 1ms after the
+        last one confuses MediaPipe's internal temporal smoothing, and
+        measurably changed detection results on real footage (verified:
+        one delivery missed on a real clip that this method finds
+        correctly — see demo_live_delivery_detection.py). This method
+        advances the internal clock by a real frame interval every call
+        instead, which is the actual fix.
+
+        Returns None if no person was detected in this frame (same
+        convention as the batch method skipping such frames outright)."""
+        rgb = np.ascontiguousarray(frame_bgr[:, :, ::-1])
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        timestamp_ms = self._next_timestamp_ms
+        result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
+        self._next_timestamp_ms = timestamp_ms + max(1, int(1000.0 / fps))
+        if result.pose_landmarks:
+            return [(lm.x, lm.y, lm.visibility) for lm in result.pose_landmarks[0]]
+        return None
+
     def close(self):
         self._landmarker.close()
 
