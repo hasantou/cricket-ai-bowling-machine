@@ -19,7 +19,7 @@ adaptation-engine/    Style-library mastery scoring + recommendation (rule-based
 cv-pipeline/          Real pretrained pose estimation + automatic delivery detection from video
 trajectory-engine/    Physics-based ball flight, twin-wheel machine control, Elo-style adaptive rating
 machine-control/      Hardware-agnostic control loop — the architecture real hardware plugs into
-hardware/             Delivery-head and sensor integration work (later phase, not started)
+hardware/             Concrete hardware requirements derived from the software's actual interfaces — no physical build yet
 data/                 Session recordings and datasets (gitignored — not committed)
 ```
 
