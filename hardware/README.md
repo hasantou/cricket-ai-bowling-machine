@@ -205,6 +205,78 @@ Everything above needs somewhere to actually run the Python software.
   (e.g. the full stereo pipeline in section 5, Tier B) turns out to need
   one.
 
+## Commissioning checklist: verify each piece before trusting the whole
+
+Every piece of software in this repo was built against the same rule —
+test the real thing, not the assumption, and never wire an unverified
+component into a bigger system and hope. Hardware bring-up should follow
+the same discipline: confirm each subsystem independently, in this
+order, before connecting it to anything else. Skipping ahead is exactly
+how a software bug or a wiring mistake ends up discovered by a spinning
+wheel instead of a test.
+
+1. **Microcontroller alone, no motors wired.** Connect it to the compute
+   unit over serial and talk to it by hand (a plain serial terminal, not
+   the Python stack yet). Send `PING`, confirm `READY`. Send `SET 100 100`,
+   confirm `OK`. Send `STOP`, confirm `OK`, then `PING` again and confirm
+   `STOPPED`. Send `RESET`, confirm `OK`, then `PING` again and confirm
+   `READY`. This alone proves the firmware speaks `PROTOCOL.md` correctly,
+   independent of motors, sensors, or Python.
+2. **Physical emergency-stop, alone.** With the microcontroller powered
+   off or disconnected entirely, confirm the E-stop button still cuts
+   motor power. If this depends on the microcontroller being alive to
+   work, it is not a real hardware E-stop — see section 2's requirement
+   that this be wired directly into the motor power path.
+3. **One wheel motor, low RPM.** Wire a single motor, leave the second
+   disconnected. Re-run step 1's `SET` command with a low, clearly-safe
+   RPM pair and confirm the wheel actually spins at roughly the commanded
+   speed, then confirm `STOP` halts it immediately — not eventually.
+4. **Both wheels, differential spin.** Add the second motor. Command
+   `SET` with two different RPM values and confirm each wheel spins at
+   its own commanded speed, independently — this is what makes spin
+   control possible at all, so confirm it directly rather than assuming
+   symmetric wiring behaves symmetrically.
+5. **`SerialMachineController` against the real firmware.** Only now
+   bring in the actual Python class (`machine_control.serial_controller
+   .SerialMachineController`) instead of a hand-typed terminal — point it
+   at the real port and confirm `set_delivery()`, `emergency_stop()`, and
+   `reset()` behave exactly as steps 1-4 did by hand. Then deliberately
+   send an out-of-range RPM through `SafeMachineController` and confirm
+   `SafetyViolation` is raised *before* anything reaches the firmware —
+   the safety layer should refuse it in software, not rely on the
+   firmware to reject it too.
+6. **Release-point sensor, alone.** Before wiring it into anything, test
+   its raw timing against a known reference — e.g. drop a ball through
+   the beam gap by hand at a roughly known speed, or spin the wheel head
+   alone (motors from step 4, no ball) and confirm the sensor reports
+   *something* sane, not silence or nonsense.
+7. **`SpeedCalibrator` against a handful of real deliveries.** Wire the
+   real sensor into `release_sensor.py`'s calibrator, bowl a few
+   deliveries, and sanity-check the resulting believed
+   `speed_efficiency` lands somewhere physically plausible (comfortably
+   between 0, no transfer, and 1, perfect transfer) before trusting it to
+   silently correct future commands.
+8. **Batter-side camera, alone.** Point it at an actual person and run
+   the existing `PoseEstimator` against a short recording — confirm real
+   landmarks come back, the same check `pose_estimation.py`'s own
+   `__main__` block already does for the model file itself.
+9. **The live pipeline, against the real camera.** Run
+   `live_video_source.py` + `live_delivery_detector.py` against the real
+   camera feed (not a file played back as if live, the actual thing this
+   time) with a person doing a few practice deliveries in front of it,
+   and confirm deliveries get detected in real time — the same
+   validation already done against file playback in
+   `demo_live_delivery_detection.py`, now for real.
+10. **Net-side sensor, alone.** Trigger it manually (walk into the
+    trip-beams, drop something at a known distance) before wiring it into
+    `ImpactSensorOutcomeObserver` or `VelocitySensorOutcomeObserver`, and
+    confirm it reports a plausible reading rather than noise.
+11. **Full loop, supervised.** Only once every piece above has been
+    independently verified, connect everything through
+    `MachineOrchestrator` for one end-to-end session — with a human
+    stationed at the physical E-stop for the entire session, not just the
+    first delivery.
+
 ## What this document deliberately does not decide
 
 - **Which physical machine** — a BOLA, a Sportsmech, or a custom-built
