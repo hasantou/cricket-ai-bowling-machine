@@ -69,13 +69,121 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Courier+Prime&display=swap');
 
-h1, h2, h3 { font-family: 'Playfair Display', Georgia, serif !important; }
-.stApp { background-color: #f4ecd8; }
+:root {
+    --pavilion-maroon: #7a2e2e;
+    --pavilion-maroon-dark: #5c2222;
+    --pavilion-ink: #3b2f22;
+    --pavilion-parchment: #f4ecd8;
+    --pavilion-parchment-dark: #e8dcc0;
+    --pavilion-brass: #a9822f;
+}
+
+.stApp { background-color: var(--pavilion-parchment); }
+
+h1, h2, h3 {
+    font-family: 'Playfair Display', Georgia, serif !important;
+    color: var(--pavilion-ink) !important;
+    letter-spacing: 0.01em;
+}
+
+/* Masthead: a scorebook-style double rule under the main title, instead
+   of Streamlit's default plain heading. */
+h1:first-of-type {
+    border-bottom: 3px double var(--pavilion-maroon);
+    padding-bottom: 0.4em;
+    margin-bottom: 0.6em !important;
+}
+
 div[data-testid="stMetricValue"] { font-family: 'Playfair Display', Georgia, serif !important; }
+div[data-testid="stMetricLabel"] {
+    font-family: 'Playfair Display', Georgia, serif !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.78em !important;
+    color: var(--pavilion-brass) !important;
+}
+/* Metric "cards": a bordered ledger-card look instead of bare numbers
+   floating on the page. */
+div[data-testid="stMetric"] {
+    background-color: var(--pavilion-parchment-dark);
+    border: 1px solid var(--pavilion-brass);
+    border-top: 3px solid var(--pavilion-maroon);
+    border-radius: 2px;
+    padding: 0.7em 1em;
+}
+
 pre, code, div[data-testid="stText"] {
     font-family: 'Courier Prime', 'Courier New', monospace !important;
 }
-hr { border-top: 1px solid #b8a888 !important; }
+/* The scorecard's render_text() output - an aged-ledger card. */
+div[data-testid="stText"] {
+    background-color: #fffdf6;
+    border: 1px solid var(--pavilion-brass);
+    border-radius: 2px;
+    padding: 1em 1.2em;
+}
+
+hr { border-top: 1px solid var(--pavilion-brass) !important; }
+
+/* Buttons: a pressed-brass look, not a default rounded-rectangle web
+   button. Primary = filled maroon; secondary = outlined. */
+.stButton > button, .stDownloadButton > button {
+    font-family: 'Playfair Display', Georgia, serif !important;
+    letter-spacing: 0.03em;
+    border-radius: 3px;
+    transition: transform 0.05s ease-in-out;
+}
+.stButton > button:active, .stDownloadButton > button:active { transform: translateY(1px); }
+.stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"] {
+    background-color: var(--pavilion-maroon);
+    border: 1px solid var(--pavilion-maroon-dark);
+    box-shadow: 0 2px 0 var(--pavilion-maroon-dark);
+}
+.stButton > button[kind="primary"]:hover, .stDownloadButton > button[kind="primary"]:hover {
+    background-color: var(--pavilion-maroon-dark);
+}
+.stButton > button[kind="secondary"], .stDownloadButton > button[kind="secondary"] {
+    border: 1px solid var(--pavilion-maroon);
+    color: var(--pavilion-maroon);
+}
+
+/* Alerts (info/success/warning/error) - one consistent aged-notice-board
+   look rather than default red/green/blue/orange, which clashed with the
+   parchment palette. */
+div[data-testid="stAlert"] {
+    background-color: var(--pavilion-parchment-dark) !important;
+    border: 1px solid var(--pavilion-brass) !important;
+    border-left: 4px solid var(--pavilion-maroon) !important;
+    border-radius: 2px !important;
+    color: var(--pavilion-ink) !important;
+}
+div[data-testid="stAlert"] p { color: var(--pavilion-ink) !important; }
+
+/* Sidebar: a shade darker, like a noticeboard set back from the main hall. */
+section[data-testid="stSidebar"] {
+    background-color: var(--pavilion-parchment-dark);
+    border-right: 1px solid var(--pavilion-brass);
+}
+section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2 {
+    text-transform: uppercase;
+    font-size: 1.1em !important;
+    letter-spacing: 0.06em;
+}
+
+/* Expanders styled as pull-out ledger tabs. */
+div[data-testid="stExpander"] {
+    border: 1px solid var(--pavilion-brass) !important;
+    border-radius: 2px !important;
+    background-color: rgba(255, 253, 246, 0.5);
+}
+
+/* Radio groups rendered horizontally read like a set of ballot choices -
+   a little letter-spacing on the label makes them read as a heading
+   rather than a stray line of text. */
+div[data-testid="stWidgetLabel"] p {
+    font-weight: 600;
+    color: var(--pavilion-ink);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -472,6 +580,13 @@ with st.sidebar:
 scorer = st.session_state.scorer
 
 st.title("🏏 AI-Adaptive Bowling Machine — MVP")
+st.markdown(
+    "<p style='margin-top:-0.8em; color:#a9822f; font-family:\"Playfair Display\",Georgia,serif; "
+    "letter-spacing:0.12em; text-transform:uppercase; font-size:0.85em;'>"
+    "A Training-Ground Companion &middot; Est. From Real Aerodynamics, 1985"
+    "</p>",
+    unsafe_allow_html=True,
+)
 
 if st.session_state.engine_family == ENGINE_FAMILIES[0]:
     st.caption(
