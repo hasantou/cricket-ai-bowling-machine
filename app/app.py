@@ -35,6 +35,7 @@ from recommender import recommend_next_styles, explain_recommendation
 from styles import STYLE_LIBRARY, STYLE_BY_KEY
 from video_pipeline import analyse_video, _expected_frame_count
 from footage_check import assess_footage
+from shot_from_video import estimate_shot_from_video, CAMERAS as _CAMERAS, RIGHT_HANDED as _RH, LEFT_HANDED as _LH
 from pose_estimation import PoseEstimator
 from outcome_bridge import VisionOutcomeEstimator
 from live_video_source import LiveVideoSource
@@ -349,6 +350,46 @@ def _analyse_clip_live(video_bytes: bytes, suffix: str):
         return estimates, frame_count, person_frame_count, elapsed, fps, footage
     finally:
         os.unlink(tmp_path)
+
+
+def _show_body_vectors(report, image_bytes, shot_estimate=None):
+    """The picture and numbers behind one delivery's body movement
+    (cv-pipeline/body_vectors.py + body_vector_render.py)."""
+    if image_bytes:
+        st.image(image_bytes, caption=(
+            "At the swing's peak: an arrow from each joint shows where it is heading over the next "
+            "0.15 s (longer = faster). Green = the pose model is confident in that joint, orange = "
+            "partly sure, grey = unsure (no arrow). Blue trail = the fast hand's path."
+        ))
+    source = "trunk (hands not trackable)" if report.peak_hand == "trunk" else report.peak_hand
+    st.markdown(
+        f"**Swing verdict: {report.swing_verdict}** — fastest {source} at "
+        f"{report.peak_hand_speed:.1f} torso-lengths/s (below ~4 = no swing; above ~25 is a tracking glitch)."
+    )
+    rows = "| Joint | Heading (on screen) | Speed (torso-lengths/s) | Model confidence |\n|---|---|---|---|\n" + "\n".join(
+        f"| {name} | {v.direction} | {v.speed:.1f} | {v.confidence} |"
+        for name, v in sorted(report.vectors_at_peak.items(), key=lambda kv: -kv[1].speed)
+    )
+    st.markdown(rows)
+    st.markdown(
+        f"- **Hand path through the swing:** {report.hand_path_length:.1f} torso-lengths travelled, net "
+        f"{report.hand_path_net_direction} ({report.hand_path_net[0]:+.1f} across, {report.hand_path_net[1]:+.1f} up)\n"
+        f"- **Hip (weight) shift over the delivery:** {report.hip_shift[0]:+.1f} across, {report.hip_shift[1]:+.1f} up\n"
+        f"- **Feet:** left ankle {report.ankle_shift['left ankle'][0]:+.1f} / {report.ankle_shift['left ankle'][1]:+.1f}, "
+        f"right ankle {report.ankle_shift['right ankle'][0]:+.1f} / {report.ankle_shift['right ankle'][1]:+.1f} "
+        "(across / up, torso-lengths)\n"
+        f"- **Shoulder line turned** {report.shoulder_line_change_deg:+.0f}° and **hip line** "
+        f"{report.hip_line_change_deg:+.0f}° from the start of the window to the peak (image plane)"
+    )
+    st.caption(" ".join(report.caveats))
+    if shot_estimate is not None:
+        if shot_estimate.verdict == "cannot tell":
+            st.warning("**Shot from video: cannot tell.** " + " ".join(shot_estimate.reasons))
+        else:
+            name = shot_estimate.shot or f"{shot_estimate.family} (shot name not readable)"
+            st.info(
+                f"**Shot from video: {name}** — {shot_estimate.confidence}. " + " ".join(shot_estimate.reasons)
+            )
 
 
 def _show_footage_report(footage):
@@ -692,6 +733,12 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                 ["Batch (whole clip at once)", "Live (frame-by-frame, as if streaming from the machine's camera)"],
                 horizontal=True,
             )
+            cam_col, hand_col = st.columns(2)
+            camera_position = cam_col.selectbox(
+                "Where was the camera?", list(_CAMERAS),
+                help="Needed to turn 'hands went screen-right' into off side or leg side.",
+            )
+            batter_hand = hand_col.selectbox("Batter bats", [_RH, _LH])
             analyse_bowler = st.checkbox(
                 "Also read the bowler's action (Batch mode; slower)",
                 value=False,
@@ -701,6 +748,8 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
             )
             vision_estimates = None
             bowler_actions = None
+            body_vectors = None
+            vector_images = None
             footage = None
             if clip is not None:
                 suffix = os.path.splitext(clip.name)[1]
@@ -710,6 +759,8 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                         vision_estimates = analysis.estimates
                         footage = analysis.footage
                         bowler_actions = analysis.bowler_actions if analyse_bowler else None
+                        body_vectors = analysis.body_vectors
+                        vector_images = analysis.vector_images
                     else:
                         vision_estimates, n_frames, n_person_frames, elapsed, live_fps, footage = _analyse_clip_live(
                             clip.getvalue(), suffix
@@ -750,15 +801,23 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                 outcome_keys = list(OUTCOME_QUALITY.keys())
                 for i, est in enumerate(vision_estimates):
                     label_col, outcome_col = st.columns([2, 1])
+                    report = body_vectors[i] if body_vectors else None
+                    swing_text = f", swing: **{report.swing_verdict}**" if report is not None else ""
                     label_col.write(
                         f"**Delivery {i + 1}** — on time: {'yes' if est.on_time else 'no'}, "
-                        f"footwork: {'correct' if est.footwork_correct else 'incorrect'}"
+                        f"footwork: {'correct' if est.footwork_correct else 'incorrect'}{swing_text}"
                     )
                     row_outcome = outcome_col.selectbox(
                         f"Outcome for delivery {i + 1}", outcome_keys,
                         key=f"video_outcome_{i}", label_visibility="collapsed",
                     )
                     row_outcomes.append(row_outcome)
+                    if report is not None:
+                        with st.expander(f"Delivery {i + 1} — body movement (joint vectors)"):
+                            _show_body_vectors(
+                                report, vector_images[i] if vector_images else None,
+                                estimate_shot_from_video(report, footage, camera_position, batter_hand),
+                            )
                     if bowler_actions is not None:
                         action = bowler_actions[i]
                         if action is None:
@@ -1195,6 +1254,13 @@ with st.expander("What's real here vs. what's a placeholder"):
         "video. The bowler-action reading is tested on synthetic skeletons only: none of "
         "the real clips available so far shows a bowler close enough to validate it, and "
         "an earlier version mistook a batter's backlift for a delivery (fixed).\n"
+        "- **Body movement and shot from video**: every detected delivery has a body-movement "
+        "panel (joint vectors drawn on the swing's peak frame, hand path, weight shift, swing "
+        "verdict). From good footage it also proposes a shot from the hands' path, given the "
+        "camera position and batting hand — but its thresholds are rules of thumb, not fitted to "
+        "labelled shots; it reads the hands, not the ball; and it refuses ('cannot tell') on poor "
+        "tracking. On the one real clip available it refuses every delivery, so it has never named "
+        "a shot on real footage.\n"
         "- **Shot naming (physics engine)**: after a sensor reading, the app names the shot "
         "(cover drive, pull, forward defence, ...) from the ball's exit direction, height and "
         "pace plus the delivery's length (`trajectory-engine/shot_analysis.py`). It is an "

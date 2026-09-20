@@ -20,10 +20,13 @@ that module's docstring for what it fetches and why it's a deliberate,
 explicit step rather than automatic).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 import cv2
+
+from body_vector_render import draw_body_vectors, to_jpeg
+from body_vectors import BodyVectorReport, analyse_body_vectors
 
 from bowler_analysis import hip_center, BowlerActionEstimate, analyse_bowler_action
 from delivery_segmentation import WINDOW_BEFORE_PEAK_SEC, find_delivery_windows
@@ -97,6 +100,9 @@ def estimate_outcome_from_video(video_path: str, estimator: PoseEstimator = None
 BOWLER_LOOKBACK_SECONDS = 3.0
 BOWLER_LOOKAHEAD_SECONDS = 0.3
 BOWLER_FRAME_STEP = 2   # analyse every 2nd frame - the bowler's motion is smooth, and it halves the cost
+BODY_LOOKBACK_SECONDS = 0.6      # body-vector window around a delivery's swing peak
+BODY_LOOKAHEAD_SECONDS = 0.8
+OVERLAY_MAX_WIDTH = 640          # annotated peak-frame images are downscaled to this width
 
 
 @dataclass
@@ -104,6 +110,8 @@ class VideoAnalysis:
     estimates: List[VisionOutcomeEstimate]                 # the batter, one per detected delivery
     footage: FootageReport                                 # is this clip good enough to trust?
     bowler_actions: List[Optional[BowlerActionEstimate]]   # aligned with `estimates`; None = no bowler found
+    body_vectors: List[Optional[BodyVectorReport]] = field(default_factory=list)   # aligned with `estimates`
+    vector_images: List[Optional[bytes]] = field(default_factory=list)             # annotated peak frame (JPEG), aligned
 
 
 def _typical_hip(window_landmarks):
@@ -114,6 +122,13 @@ def _typical_hip(window_landmarks):
     centers = [hip_center(frame) for frame in window_landmarks]
     xs, ys = sorted(c[0] for c in centers), sorted(c[1] for c in centers)
     return xs[len(xs) // 2], ys[len(ys) // 2]
+
+
+def _swing_frame(window_start: int, frame_of: List[int], fps: float) -> int:
+    """The real frame index of a delivery's swing peak. Delivery windows are
+    counted in landmark space (frames with no person are absent there), so map
+    back through `frame_of` — otherwise every dropout shifts the answer earlier."""
+    return frame_of[min(window_start + int(WINDOW_BEFORE_PEAK_SEC * fps), len(frame_of) - 1)]
 
 
 def analyse_video(
@@ -130,7 +145,9 @@ def analyse_video(
     estimator = estimator or PoseEstimator()
     try:
         frames, fps = _read_frames(video_path)
-        landmarks = estimator.extract_landmarks_from_frames(frames, fps)
+        aligned = estimator.extract_aligned_landmarks_from_frames(frames, fps)
+        frame_of = [i for i, lm in enumerate(aligned) if lm is not None]   # landmark index -> real frame index
+        landmarks = [aligned[i] for i in frame_of]
         if not landmarks:
             raise ValueError(
                 f"No person detected in any frame of {video_path} — check the clip actually "
@@ -146,7 +163,7 @@ def analyse_video(
             eff_fps = fps / BOWLER_FRAME_STEP
             with PoseEstimator(num_poses=4) as multi:
                 for k, (start, end) in enumerate(windows):
-                    swing_frame = start + int(WINDOW_BEFORE_PEAK_SEC * fps)
+                    swing_frame = _swing_frame(start, frame_of, fps)
                     lo = max(0, swing_frame - int(BOWLER_LOOKBACK_SECONDS * fps))
                     hi = min(len(frames), swing_frame + int(BOWLER_LOOKAHEAD_SECONDS * fps))
                     window_poses = [
@@ -158,7 +175,26 @@ def analyse_video(
                         batter_swing_frame=(swing_frame - lo) // BOWLER_FRAME_STEP,
                         batter_hip=_typical_hip(landmarks[start:end]),
                     )
-        return VideoAnalysis(estimates=estimates, footage=footage, bowler_actions=bowler_actions)
+        body_vectors: List[Optional[BodyVectorReport]] = []
+        vector_images: List[Optional[bytes]] = []
+        aspect = frames[0].shape[1] / frames[0].shape[0]
+        for start, _end in windows:
+            swing = _swing_frame(start, frame_of, fps)
+            lo, hi = max(0, swing - int(BODY_LOOKBACK_SECONDS * fps)), min(len(frames), swing + int(BODY_LOOKAHEAD_SECONDS * fps))
+            report = analyse_body_vectors(aligned[lo:hi], fps, aspect)
+            body_vectors.append(report)
+            image = None
+            if report is not None and aligned[lo + report.peak_frame] is not None:
+                drawn = draw_body_vectors(frames[lo + report.peak_frame], aligned[lo + report.peak_frame], report)
+                if drawn.shape[1] > OVERLAY_MAX_WIDTH:
+                    scale = OVERLAY_MAX_WIDTH / drawn.shape[1]
+                    drawn = cv2.resize(drawn, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                image = to_jpeg(drawn)
+            vector_images.append(image)
+        return VideoAnalysis(
+            estimates=estimates, footage=footage, bowler_actions=bowler_actions,
+            body_vectors=body_vectors, vector_images=vector_images,
+        )
     finally:
         if owns_estimator:
             estimator.close()

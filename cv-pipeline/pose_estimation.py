@@ -68,12 +68,12 @@ class PoseEstimator:
         # each time — while a single clip still starts at timestamp 0 as before.
         self._next_timestamp_ms = 0
 
-    def extract_landmarks_from_frames(self, frames_bgr, fps: float) -> List[FrameLandmarks]:
-        """frames_bgr: list of HxWx3 uint8 numpy arrays, as read by
-        OpenCV (BGR channel order). Returns one landmark list per frame
-        that had a detected person; frames with nobody detected are
-        skipped outright rather than padded with fabricated zeros, so
-        downstream feature math never sees a fake detection."""
+    def extract_aligned_landmarks_from_frames(self, frames_bgr, fps: float) -> list:
+        """Like extract_landmarks_from_frames(), but keeps frame positions: one
+        entry per input frame, either that frame's landmarks or None if nobody
+        was detected. Anything measuring TIME (velocities, when a swing peaked)
+        needs this — dropping empty frames, as the batch method does, silently
+        shrinks the time between the frames either side of a dropout."""
         results = []
         base_ms = self._next_timestamp_ms
         for i, frame in enumerate(frames_bgr):
@@ -82,10 +82,18 @@ class PoseEstimator:
             timestamp_ms = base_ms + int(i * (1000.0 / fps))
             result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
             self._next_timestamp_ms = timestamp_ms + 1
-            if result.pose_landmarks:
-                landmarks = [(lm.x, lm.y, lm.visibility) for lm in result.pose_landmarks[0]]
-                results.append(landmarks)
+            results.append(
+                [(lm.x, lm.y, lm.visibility) for lm in result.pose_landmarks[0]] if result.pose_landmarks else None
+            )
         return results
+
+    def extract_landmarks_from_frames(self, frames_bgr, fps: float) -> List[FrameLandmarks]:
+        """frames_bgr: list of HxWx3 uint8 numpy arrays, as read by
+        OpenCV (BGR channel order). Returns one landmark list per frame
+        that had a detected person; frames with nobody detected are
+        skipped outright rather than padded with fabricated zeros, so
+        downstream feature math never sees a fake detection."""
+        return [lm for lm in self.extract_aligned_landmarks_from_frames(frames_bgr, fps) if lm is not None]
 
     def extract_landmarks_from_one_live_frame(self, frame_bgr, fps: float):
         """Live counterpart to extract_landmarks_from_frames(), for a

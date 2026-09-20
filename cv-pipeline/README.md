@@ -261,29 +261,60 @@ What testing against real footage found, honestly:
   tested on synthetic skeletons only, not yet validated on real footage.**
   It needs a clip with the bowler in shot and large enough.
 
-## Naming the shot from video: what was tried, and what it needs
+## Body vectors and shot type from video
 
-Asked for "straight drive / cover drive / ..." from video, this was tried on
-the arena clip and did **not** hold up, so no video-only shot naming ships:
+**`body_vectors.py`** turns pose landmarks into movement vectors: for every
+joint, which way it is heading and how fast (torso-lengths per second, so
+camera distance doesn't matter), plus the hands' path through the swing, hip
+(weight) shift, foot movement and shoulder/hip-line rotation.
+**`body_vector_render.py`** draws them on the frame (an arrow per joint,
+showing where it is heading over the next 0.15 s; grey and arrow-less for
+joints the model is unsure of). The app shows this per delivery.
 
-- Hand speed and reach (in torso-lengths) did not separate a real full swing
-  from a batter merely taking stance or guard — the two non-swing windows
-  scored as high as the real swing, because pose jitter dominates and the bat
-  itself is invisible to a pose model.
-- Filmed from behind the batter, both legs project onto one column, and the
-  left arm/knees come back at 0.24-0.49 confidence, so front/back foot could
-  not be read at the frame checked either.
-- The delivery detector triggers on the batter's wrist movement, so on that
-  clip two of its four "deliveries" were the batter walking in / taking guard.
+What real footage taught it, in order:
 
-What ships instead: the machine path names shots from the post-contact
-sensor (`trajectory-engine/shot_analysis.py`), and this module supports the
-data-driven route for video. `shot_labels.py` finds which frame of a clip an
-annotated screenshot is (`locate_frame_in_video`), `labels/shot_labels.json`
-records the annotations (the first: arena clip, frame 111, shot name still
-blank until the annotator supplies it), and `evaluate()` reports agreement
-with predictions once labelled shots exist — and says how few it rests on.
-A video shot classifier needs hundreds of labelled examples, not one.
+- **Raw landmark differences are noise.** Unsmoothed, a batter merely taking
+  guard scored as fast as a real swing. (An earlier version of this README
+  said pose *cannot* separate a swing from taking guard. That was wrong: it
+  was an artifact of using unsmoothed jitter.) Tracks are now confidence-gated
+  and smoothed; on the arena clip, smoothed peak hand speeds were ~7-9
+  torso-lengths/s for the two real swings and ~1-3 for the two stances,
+  which I checked by eye. That is four windows on one clip, not a validation.
+- **The whole body moving is not a swing.** A batter drifting out of frame
+  moved every joint together and was first called a swing. Hands are now
+  measured relative to the hip centre, so walking or a panning camera cancels.
+- **Some speeds are impossible.** A second clip gave "hand speeds" of 36 and
+  60 torso-lengths/s (pose glitches on a small, distant batter). Above 25 is
+  flagged as a glitch and the verdict is "unclear".
+- **Hands are often not visible.** From behind the batter the model was
+  confident in the wrists in only 13-49% of frames, and both legs project onto
+  one column. Every joint carries good / partial / poor confidence, and if
+  neither wrist is usable the trunk stands in and the report says so.
+
+**`shot_from_video.py`** is the shot-type algorithm for good footage: swing or
+not, then defensive push / drive-type / horizontal-bat, then off/leg side from
+the hands' path and the camera position, then a name from the shot vocabulary
+(straight/off/cover drive, on drive, flick, cut, pull, hook, leave). Read its
+docstring before trusting it:
+
+- Its thresholds are **rules of thumb, not fitted to labelled shots**. There is
+  no accuracy figure. `shot_labels.py:evaluate()` gives one once labelled shots
+  exist; the thresholds are what to tune.
+- It reads the **hands, not the ball**. The bat face at contact decides where
+  the ball goes. The machine's sensor path is the stronger source.
+- It **refuses** ("cannot tell", with the reason) unless the footage is good,
+  the batter is tracked in nearly every frame, and the fast hand itself was
+  tracked with high confidence. On the arena clip it refuses every delivery,
+  because from behind the hands are only partly visible. It has therefore
+  **never named a shot on real footage**; the naming rules are tested on
+  synthetic data only.
+- The caller must give the camera position and batting hand; from side-on it
+  names only the shot family, never a side.
+
+`shot_labels.py` finds which frame of a clip an annotated screenshot is
+(`locate_frame_in_video`), `labels/shot_labels.json` records the annotations
+(first entry: arena clip, frame 111, shot name still blank), and `evaluate()`
+scores predictions against labels and reports how few it rests on.
 
 ## What isn't built yet
 
@@ -327,7 +358,7 @@ python cv-pipeline/demo_live_delivery_detection.py path/to/clip.mp4   # the live
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-90 tests: feature-extraction math (including `footwork_lead_seconds`) and
+132 tests: feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the
