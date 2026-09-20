@@ -53,6 +53,7 @@ from machine_control.serial_controller import SerialCommunicationError, SerialMa
 from machine_control.release_sensor import SimulatedReleaseSensor, SpeedCalibrator
 from machine_control.impact_sensor import SimulatedVelocitySensor, VelocitySensorOutcomeObserver
 from cricket_trajectory.net_outcome import classify_exit_velocity, NET_OUTCOMES
+from cricket_trajectory.shot_vocabulary import by_detectability as _shot_detectability
 try:
     from serial.tools import list_ports as _serial_list_ports
 except ImportError:
@@ -371,6 +372,9 @@ def _bowler_action_rows(action):
         ("Release → batter's swing",
          f"{action.release_to_swing_s:.2f} s" if action.release_to_swing_s is not None else "n/a"),
     ]
+
+
+shot_detectability = _shot_detectability()
 
 
 if "engine_family" not in st.session_state:
@@ -1068,6 +1072,16 @@ else:
                                 shot.rationale + " This is an inference from the ball's direction, height, "
                                 "pace and length — a rule table, not a coach's verdict. Right-handed batter "
                                 "assumed. Here the sensor reading is simulated."
+                            )
+                        with st.expander("Which shots can this tell apart, and which can't it?"):
+                            for reason, shots in shot_detectability.items():
+                                st.markdown(
+                                    f"**{'Can name from the sensor reading' if reason == 'sensor' else 'Cannot yet — ' + reason}:** "
+                                    + ", ".join(shots)
+                                )
+                            st.caption(
+                                "Shot list transcribed from the project's saved shot-name reference "
+                                "(`shot_vocabulary.py`); a plain reference list, not a coaching standard."
                             )
                         if st.button("Log delivery", type="primary"):
                             card.record_ball(profile, ball, next_ball, sim_result, outcome=r["outcome"])

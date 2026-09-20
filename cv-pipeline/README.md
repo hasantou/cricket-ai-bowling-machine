@@ -261,6 +261,30 @@ What testing against real footage found, honestly:
   tested on synthetic skeletons only, not yet validated on real footage.**
   It needs a clip with the bowler in shot and large enough.
 
+## Naming the shot from video: what was tried, and what it needs
+
+Asked for "straight drive / cover drive / ..." from video, this was tried on
+the arena clip and did **not** hold up, so no video-only shot naming ships:
+
+- Hand speed and reach (in torso-lengths) did not separate a real full swing
+  from a batter merely taking stance or guard — the two non-swing windows
+  scored as high as the real swing, because pose jitter dominates and the bat
+  itself is invisible to a pose model.
+- Filmed from behind the batter, both legs project onto one column, and the
+  left arm/knees come back at 0.24-0.49 confidence, so front/back foot could
+  not be read at the frame checked either.
+- The delivery detector triggers on the batter's wrist movement, so on that
+  clip two of its four "deliveries" were the batter walking in / taking guard.
+
+What ships instead: the machine path names shots from the post-contact
+sensor (`trajectory-engine/shot_analysis.py`), and this module supports the
+data-driven route for video. `shot_labels.py` finds which frame of a clip an
+annotated screenshot is (`locate_frame_in_video`), `labels/shot_labels.json`
+records the annotations (the first: arena clip, frame 111, shot name still
+blank until the annotator supplies it), and `evaluate()` reports agreement
+with predictions once labelled shots exist — and says how few it rests on.
+A video shot classifier needs hundreds of labelled examples, not one.
+
 ## What isn't built yet
 
 - A real ball detector — `ball_tracking.py` above assumes one exists;
@@ -303,7 +327,7 @@ python cv-pipeline/demo_live_delivery_detection.py path/to/clip.mp4   # the live
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-85 tests: feature-extraction math (including `footwork_lead_seconds`) and
+90 tests: feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the

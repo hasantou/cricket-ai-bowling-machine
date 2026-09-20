@@ -164,6 +164,16 @@ isn't supplied, front/back foot is *inferred from the ball's length* and the
 result is marked "approximate"; pass an observed `footwork` (e.g. from video)
 and it is marked "firm". It has not been checked against a coach's labels.
 
+`shot_vocabulary.py` is the shot list it speaks (transcribed from a saved
+general-purpose shot-name reference — a plain list, not a coaching standard),
+and it states which shots can be named from the sensor today (drives, flick,
+leg glance, square cut, late cut, back-foot punch, pull, hook, defences) and
+which cannot, with the reason: sweeps need the bowler type; cut (generic),
+slog, switch hit, scoops, upper cut, helicopter and dead-bat need bat or body
+information; leave needs video. Tests enforce both directions — the
+classifier never outputs a name outside the list, and never claims a shot the
+vocabulary says it can't tell apart.
+
 ```python
 from cricket_trajectory import analyse_shot
 shot = analyse_shot(exit_velocity, delivery_report.length_label)   # exit_velocity None = no contact

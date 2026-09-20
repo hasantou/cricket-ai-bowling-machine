@@ -1,0 +1,17 @@
+{
+  "about": "Hand-annotated shots: an annotated screenshot of a paused frame, tied to the exact frame of the source clip. `shot` is null until the person who annotated it says what the shot was; nothing here is inferred by the pipeline.",
+  "labels": [
+    {
+      "id": "arena-2026-09-20-d0",
+      "clip": "WhatsApp Video 2026-09-20 at 01.46.47.mp4",
+      "frame": 111,
+      "match_difference": 5.5,
+      "delivery_index": 0,
+      "camera": "behind the batter; batter about 37% of frame height",
+      "annotation": "Green hooked arrow drawn at the bat's toe, starting low-right and curving to the right. Read as the bat's path / shot direction, finishing toward the right of the frame — interpretation NOT confirmed by the annotator.",
+      "shot": null,
+      "direction": null,
+      "pose_note": "At this frame the pose model finds torso and right arm, but both legs collapse into one column (viewed from behind) and the left arm/knees are low-confidence (0.24-0.49): front/back foot cannot be read."
+    }
+  ]
+}

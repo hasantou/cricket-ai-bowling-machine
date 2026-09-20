@@ -101,28 +101,26 @@ def _trajectory(elevation_deg: float) -> str:
     return "along the ground"
 
 
-def _name(region: str, length: str, front: bool, lofted: bool, bouncer: bool) -> str:
-    """The shot the direction + length point to, for an attacking hit."""
-    pre = "lofted " if lofted else ""
+def _name(region: str, front: bool, bouncer: bool) -> str:
+    """The vocabulary shot (see shot_vocabulary.py) that this direction, foot
+    and length point to, for an attacking hit."""
     if region == "straight":
-        return f"{pre}straight drive" if front else f"{pre}back-foot straight punch"
+        return "Straight drive" if front else "Back-foot punch"
     if region == "mid-off":
-        return f"{pre}off drive" if front else f"{pre}back-foot off-side punch"
+        return "Off drive" if front else "Back-foot punch"
     if region == "mid-on":
-        return f"{pre}on drive" if front else "pull"
+        return "On drive" if front else "Pull"
     if region == "cover":
-        return f"{pre}cover drive" if front else f"{pre}back-foot punch through cover"
+        return "Cover drive" if front else "Back-foot punch"
     if region == "midwicket":
-        if front:
-            return f"{pre}flick / whip through midwicket"
-        return "hook" if bouncer else "pull"
+        return "Flick" if front else ("Hook" if bouncer else "Pull")
     if region == "point":
-        return f"{pre}square drive" if front else "square cut"
+        return "Square drive" if front else "Square cut"
     if region == "square leg":
-        return f"{pre}flick square of the wicket" if front else ("hook" if bouncer else "pull")
+        return "Flick" if front else ("Hook" if bouncer else "Pull")
     if region.startswith("third man"):
-        return "late cut" if not front else "thick edge / deflection behind square"
-    return "leg glance" if front else "fine hook / glance"          # fine leg
+        return "Late cut" if not front else "thick edge / deflection behind square"
+    return "Leg glance" if front else "Hook"          # fine leg
 
 
 def analyse_shot(
@@ -168,7 +166,7 @@ def analyse_shot(
             **common,
         )
     if speed < DEAD_BAT_SPEED_MPS:
-        name = "forward defence (block)" if front else "back-foot defence (block)"
+        name = "Forward defence" if front else "Back-foot defence"
         return ShotAnalysis(
             shot=name, confidence="firm" if source.startswith("observed") else "approximate",
             rationale=f"Left the bat at only {speed * 3.6:.0f} km/h — below {DEAD_BAT_SPEED_MPS * 3.6:.0f} km/h "
@@ -177,7 +175,9 @@ def analyse_shot(
         )
 
     lofted = trajectory == "in the air" and speed >= WELL_STRUCK_SPEED_MPS
-    name = _name(region, length_label, front, lofted, bouncer)
+    name = _name(region, front, bouncer)
+    if lofted and name.endswith("drive"):
+        name = "Lofted drive"
     # An attacking name that leans on an inferred foot is a weaker claim than one
     # that doesn't depend on footwork (the straight/behind-square regions read the
     # same either way for most lengths) — say so rather than sound certain.
@@ -185,6 +185,6 @@ def analyse_shot(
     return ShotAnalysis(
         shot=name, confidence=confidence,
         rationale=f"Ball went to {region} ({az:+.0f}°), {trajectory}, off a {length_label} ball played off the "
-                  f"{foot} ({source}). That combination is what a {name} looks like.",
+                  f"{foot} ({source}). That combination is what a {name.lower()} looks like.",
         **common,
     )
