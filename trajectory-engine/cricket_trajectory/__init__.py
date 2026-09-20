@@ -31,6 +31,7 @@ from .scorecard import (
 )
 from .delivery_report import DeliveryReport, build_delivery_report
 from .shot_analysis import ShotAnalysis, analyse_shot
+from .shot_fusion import FusedShot, fuse_shot
 from .net_outcome import (
     NetOutcome,
     NET_OUTCOMES,
@@ -61,6 +62,8 @@ __all__ = [
     "build_delivery_report",
     "ShotAnalysis",
     "analyse_shot",
+    "FusedShot",
+    "fuse_shot",
     "NetOutcome",
     "NET_OUTCOMES",
     "classify_net_outcome",

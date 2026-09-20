@@ -15,8 +15,11 @@ from shot_from_video import (
 from test_body_vectors import FPS, moving_wrist
 
 
-def good_footage(verdict="good"):
-    return FootageReport(300, 300, 1.0, 0.4, 0.95, 300, verdict, ["fine"])
+def good_footage(verdict="good", shot_reading_ok=True):
+    return FootageReport(300, 300, 1.0, 0.4, 0.95, 300, verdict, ["fine"],
+                         hand_visibility=1.0 if shot_reading_ok else 0.1, leg_separation=0.1,
+                         shot_reading_ok=shot_reading_ok,
+                         shot_reading_notes=[] if shot_reading_ok else ["Both hands were confidently seen in only 10% of frames"])
 
 
 def report(across=0.0, up=0.0, length=3.0, speed=8.0, hand="right wrist", confidence="good",
@@ -124,3 +127,8 @@ def test_end_to_end_a_rightward_hand_swing_from_behind_reads_as_toward_the_off_s
     assert (r.verdict, r.shot, r.side) == ("shot named", "Cut", "off side")     # a wide rightward hand path
     flipped = estimate_shot_from_video(rep, good_footage(), BOWLERS_END, RIGHT_HANDED)
     assert (flipped.shot, flipped.side) == ("Pull", "leg side")
+
+
+def test_a_camera_position_that_cannot_show_the_hands_is_itself_a_reason_to_refuse():
+    r = est(report(across=1.4, up=1.2), footage=good_footage(shot_reading_ok=False))
+    assert r.verdict == "cannot tell" and any("hands" in why for why in r.reasons)

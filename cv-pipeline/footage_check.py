@@ -22,7 +22,7 @@ a precise quality score.
 from __future__ import annotations
 
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Sequence
 
 from feature_extraction import FrameLandmarks
@@ -37,6 +37,8 @@ POOR_VISIBILITY = 0.50
 MARGINAL_VISIBILITY = 0.70
 POOR_DETECTION_RATE = 0.60
 MARGINAL_DETECTION_RATE = 0.85
+MIN_HAND_VISIBILITY = 0.60       # share of frames with BOTH wrists confidently seen, needed to read a swing's shape
+MIN_LEG_SEPARATION = 0.06        # median ankle-to-ankle gap as a fraction of the person's height; below = legs overlap
 UNREADABLE_FRACTION = 0.95     # decoded fewer than this share of the promised frames -> unreadable
 
 
@@ -50,6 +52,15 @@ class FootageReport:
     frames_expected: int             # what the video container said it holds (0 = unknown)
     verdict: str                     # "good" | "marginal" | "poor"
     reasons: List[str]
+    # Camera-position suitability for reading SHOTS (a stricter question than "is the clip usable"):
+    hand_visibility: float = 0.0     # share of frames with both wrists confidently seen
+    leg_separation: float = 0.0      # median ankle gap / person height (near 0 = legs overlap, e.g. filmed from behind)
+    shot_reading_ok: bool = False
+    shot_reading_notes: List[str] = field(default_factory=list)
+
+
+def _heights_by_frame(landmarks):
+    return [((f[LEFT_ANKLE][1] + f[RIGHT_ANKLE][1]) / 2.0) - f[NOSE][1] for f in landmarks]
 
 
 def assess_footage(
@@ -119,6 +130,27 @@ def assess_footage(
         reasons.append(f"A person was found in {detection_rate * 100:.0f}% of frames.")
 
     worst = max(levels) if levels else 0
+
+    wrist_ok = sum(1 for f in landmarks if f[15][2] >= POOR_VISIBILITY and f[16][2] >= POOR_VISIBILITY)
+    hand_visibility = wrist_ok / len(landmarks)
+    gaps = [abs(f[LEFT_ANKLE][0] - f[RIGHT_ANKLE][0]) / h for f, h in zip(landmarks, _heights_by_frame(landmarks)) if h > 0]
+    leg_separation = statistics.median(gaps) if gaps else 0.0
+    notes: List[str] = []
+    if worst == 2:
+        notes.append("The footage itself is poor (see above).")
+    if hand_visibility < MIN_HAND_VISIBILITY:
+        notes.append(
+            f"Both hands were confidently seen in only {hand_visibility * 100:.0f}% of frames "
+            f"(need {MIN_HAND_VISIBILITY * 100:.0f}%+) — the swing's shape cannot be read from this camera position."
+        )
+    if person_fraction < MARGINAL_PERSON_FRACTION:
+        notes.append("The batter is too small in frame to read the swing; move the camera closer or zoom.")
+    if leg_separation < MIN_LEG_SEPARATION:
+        notes.append(
+            "The two legs overlap from this angle (typical when filmed from behind), so front/back foot "
+            "cannot be read."
+        )
+    shot_ok = worst < 2 and hand_visibility >= MIN_HAND_VISIBILITY and person_fraction >= MARGINAL_PERSON_FRACTION
     return FootageReport(
         frames_total=frames_total,
         frames_with_person=len(landmarks),
@@ -128,4 +160,6 @@ def assess_footage(
         frames_expected=frames_expected,
         verdict=("good", "marginal", "poor")[worst],
         reasons=reasons or ["Person size, pose confidence and detection rate all look fine."],
+        hand_visibility=hand_visibility, leg_separation=leg_separation,
+        shot_reading_ok=shot_ok, shot_reading_notes=notes,
     )

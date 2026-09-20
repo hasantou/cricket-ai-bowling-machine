@@ -311,6 +311,37 @@ docstring before trusting it:
 - The caller must give the camera position and batting hand; from side-on it
   names only the shot family, never a side.
 
+**Built so real-world tests make it stronger** (protocol:
+`docs/real_world_test_protocol.md`):
+
+- **Camera suitability** (`footage_check.py`): besides "is the clip usable", it
+  now reports `hand_visibility` (share of frames with both wrists confidently
+  seen), leg separation and a `shot_reading_ok` verdict with reasons. Measured
+  on the two real clips: hands confidently seen in only **7%** (behind the
+  batter) and **30%** (small, side-on) of frames, so neither camera position can
+  read a swing. That number is what to check first at any new camera position.
+- **Tunable rules** (`shot_from_video.ShotRules`): every threshold is a field
+  of one value; `classify_features()` is a pure function of the four measured
+  numbers, so it can be tuned and scored offline.
+- **Trial log + calibrator** (`shot_calibration.py`): labelled deliveries
+  (`TrialRecord`) are stored as JSON lines; `evaluate_rules()` scores the
+  algorithm against them with a confusion table; `fit_rules()` tunes the
+  thresholds by coordinate descent. Guardrails: learns only from deliveries the
+  algorithm trusted; refuses under 30 of them; reports **held-out** k-fold
+  accuracy next to the current rules' held-out accuracy; adopts the fit only if
+  it wins by 3 points; never overwrites the defaults itself; saved rules carry
+  their evidence. The tests show the fitting mechanism recovers known
+  thresholds from synthetic data (including with 15% wrong labels, and refusing
+  to "adopt" a fit to random labels). **They do not show that real shots separate
+  cleanly by hand path** - only real labelled trials can.
+- **In the app**: "Real-world trial" lets a person pick each delivery's true
+  shot, log it, see the agreement score, tune once 30 trusted examples exist,
+  and download the log (the hosted app's storage is temporary).
+
+Also in `trajectory-engine`: `shot_fusion.fuse_shot()` combines the sensor's
+shot (the ball) with the video's (the hands): agreement corroborates, a
+disagreement is reported and the sensor's name used.
+
 `shot_labels.py` finds which frame of a clip an annotated screenshot is
 (`locate_frame_in_video`), `labels/shot_labels.json` records the annotations
 (first entry: arena clip, frame 111, shot name still blank), and `evaluate()`
@@ -358,7 +389,7 @@ python cv-pipeline/demo_live_delivery_detection.py path/to/clip.mp4   # the live
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-132 tests: feature-extraction math (including `footwork_lead_seconds`) and
+147 tests: feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the

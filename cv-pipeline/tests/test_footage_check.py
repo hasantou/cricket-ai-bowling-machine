@@ -72,3 +72,41 @@ def test_a_fully_read_video_is_not_flagged():
 
 def test_an_unknown_expected_count_is_ignored():
     assert assess_footage([skeleton(0.55)] * 50, frames_total=50, frames_expected=0).verdict == "good"
+
+
+def _with(lm, index, x=None, vis=None):
+    lm = list(lm)
+    px, py, pv = lm[index]
+    lm[index] = (px if x is None else x, py, pv if vis is None else vis)
+    return lm
+
+
+def test_visible_hands_and_a_large_batter_are_suitable_for_reading_shots():
+    r = assess_footage([skeleton(0.55)] * 100, frames_total=100)
+    assert r.hand_visibility == 1.0 and r.shot_reading_ok and r.shot_reading_notes == []
+
+
+def test_hidden_hands_make_the_camera_position_unsuitable_and_say_why():
+    hidden = _with(_with(skeleton(0.55), 15, vis=0.2), 16, vis=0.2)
+    r = assess_footage([hidden] * 100, frames_total=100)
+    assert r.hand_visibility == 0.0 and not r.shot_reading_ok
+    assert any("hands" in n for n in r.shot_reading_notes)
+    assert r.verdict == "good"          # the clip is fine as a clip; it is the camera position that can't read shots
+
+
+def test_hands_seen_in_only_some_frames_is_scored_as_that_share():
+    good, hidden = skeleton(0.55), _with(skeleton(0.55), 16, vis=0.1)
+    r = assess_footage([good] * 40 + [hidden] * 60, frames_total=100)
+    assert abs(r.hand_visibility - 0.4) < 1e-9 and not r.shot_reading_ok
+
+
+def test_overlapping_legs_are_reported_as_such():
+    overlapped = _with(_with(skeleton(0.55), 27, x=0.50), 28, x=0.505)
+    r = assess_footage([overlapped] * 100, frames_total=100)
+    assert r.leg_separation < 0.06
+    assert any("legs overlap" in n for n in r.shot_reading_notes)
+
+
+def test_a_small_batter_is_told_to_move_closer():
+    r = assess_footage([skeleton(0.22)] * 100, frames_total=100)
+    assert any("closer" in n for n in r.shot_reading_notes) and not r.shot_reading_ok

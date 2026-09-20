@@ -35,6 +35,12 @@ from recommender import recommend_next_styles, explain_recommendation
 from styles import STYLE_LIBRARY, STYLE_BY_KEY
 from video_pipeline import analyse_video, _expected_frame_count
 from footage_check import assess_footage
+from shot_calibration import (
+    TrialRecord, evaluate_rules as _evaluate_rules, fit_rules as _fit_rules, records_from_lines as _records_from_lines,
+    MIN_EXAMPLES as _TRIAL_MIN,
+)
+from shot_from_video import gate_reasons as _gate_reasons, DEFAULT_RULES as _DEFAULT_RULES
+from cricket_trajectory.shot_vocabulary import names as _shot_names
 from shot_from_video import estimate_shot_from_video, CAMERAS as _CAMERAS, RIGHT_HANDED as _RH, LEFT_HANDED as _LH
 from pose_estimation import PoseEstimator
 from outcome_bridge import VisionOutcomeEstimator
@@ -389,6 +395,78 @@ def _show_body_vectors(report, image_bytes, shot_estimate=None):
             name = shot_estimate.shot or f"{shot_estimate.family} (shot name not readable)"
             st.info(
                 f"**Shot from video: {name}** — {shot_estimate.confidence}. " + " ".join(shot_estimate.reasons)
+            )
+
+
+def _trial_panel(body_vectors, footage, camera_position, batter_hand, clip_name):
+    """Real-world trials: a person records what each shot really was; the app scores
+    the algorithm against that and, once there are enough trusted examples, can tune
+    its thresholds (cv-pipeline/shot_calibration.py). Cloud storage is temporary, so the
+    log lives in this session and is downloaded / re-uploaded as a file."""
+    if "trial_records" not in st.session_state:
+        st.session_state.trial_records = []
+    records = st.session_state.trial_records
+    with st.expander("Real-world trial: record what each shot really was", expanded=False):
+        st.caption(
+            "This is how the shot algorithm gets stronger: label each delivery with the true shot, and the "
+            "app scores its guess against yours, then (with enough examples) tunes its own thresholds on "
+            "held-out data. Only deliveries the algorithm trusts count toward tuning."
+        )
+        options = ["(skip)"] + _shot_names() + ["Defensive push (block)"]
+        choices = {}
+        for i, report in enumerate(body_vectors):
+            if report is None:
+                continue
+            choices[i] = st.selectbox(f"True shot — delivery {i + 1}", options, key=f"trial_label_{i}")
+        if st.button("Add these labels to the trial log"):
+            added = 0
+            for i, label in choices.items():
+                if label == "(skip)":
+                    continue
+                report = body_vectors[i]
+                records.append(TrialRecord(
+                    id=f"{clip_name}#d{i + 1}", label=label, camera=camera_position, hand=batter_hand,
+                    across=report.hand_path_net[0], up=report.hand_path_net[1], length=report.hand_path_length,
+                    speed=report.peak_hand_speed, gates_passed=not _gate_reasons(report, footage),
+                    clip=clip_name, delivery_index=i,
+                ))
+                added += 1
+            st.success(f"Added {added} labelled deliver{'y' if added == 1 else 'ies'} to the trial log.")
+
+        uploaded = st.file_uploader("Load a previous trial log (.jsonl)", type=["jsonl", "txt"], key="trial_log_upload")
+        if uploaded is not None:
+            try:
+                loaded = _records_from_lines(uploaded.getvalue().decode("utf-8"))
+                known = {r.id for r in records}
+                records.extend(r for r in loaded if r.id not in known)
+            except (UnicodeDecodeError, ValueError, TypeError, KeyError):
+                st.error("That file is not a trial log this app wrote.")
+
+        if records:
+            trusted = [r for r in records if r.gates_passed]
+            st.markdown(f"**Trial log:** {len(records)} labelled deliveries, {len(trusted)} trusted by the algorithm.")
+            evaluation = _evaluate_rules(_DEFAULT_RULES, records)
+            if evaluation["accuracy"] is None:
+                st.info("None of the logged deliveries passed the trust gates, so the algorithm named nothing to score. "
+                        "That is the honest result for footage where the hands are not visible.")
+            else:
+                st.info(f"Current rules agree with the labels on **{evaluation['correct']} of {evaluation['trusted_records']}** "
+                        f"trusted deliveries ({evaluation['accuracy']:.0%}). {evaluation['note']}")
+                if evaluation["disagreements"]:
+                    st.write("Disagreements: " + "; ".join(
+                        f"{d['id']} (you: {d['truth']}, algorithm: {d['predicted']})" for d in evaluation["disagreements"][:8]))
+            if len(trusted) >= _TRIAL_MIN:
+                if st.button("Tune the thresholds from these trials"):
+                    result = _fit_rules(records)
+                    (st.success if result.adopt else st.warning)(result.reason)
+                    if result.adopt:
+                        st.json(result.rules.as_dict())
+            else:
+                st.caption(f"Tuning unlocks at {_TRIAL_MIN} trusted labelled deliveries "
+                           f"({len(trusted)} so far) — fewer would just memorise the examples.")
+            st.download_button(
+                "Download the trial log", data="\n".join(json.dumps(r.__dict__) for r in records),
+                file_name="shot_trials.jsonl", mime="application/x-ndjson",
             )
 
 
@@ -838,6 +916,8 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                     "measured from video — on the machine those come from the delivery report and the "
                     "release / impact sensors."
                 )
+                if body_vectors:
+                    _trial_panel(body_vectors, footage, camera_position, batter_hand, clip.name)
                 with st.expander("Raw features for all detected deliveries"):
                     st.json([est.features.__dict__ for est in vision_estimates])
 
@@ -1260,7 +1340,7 @@ with st.expander("What's real here vs. what's a placeholder"):
         "camera position and batting hand — but its thresholds are rules of thumb, not fitted to "
         "labelled shots; it reads the hands, not the ball; and it refuses ('cannot tell') on poor "
         "tracking. On the one real clip available it refuses every delivery, so it has never named "
-        "a shot on real footage.\n"
+        "a shot on real footage. A \"Real-world trial\" panel records what each shot really was, scores the algorithm against it and, with 30+ trusted labelled deliveries, tunes its thresholds on held-out data (see docs/real_world_test_protocol.md).\n"
         "- **Shot naming (physics engine)**: after a sensor reading, the app names the shot "
         "(cover drive, pull, forward defence, ...) from the ball's exit direction, height and "
         "pace plus the delivery's length (`trajectory-engine/shot_analysis.py`). It is an "

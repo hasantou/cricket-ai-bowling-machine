@@ -180,6 +180,16 @@ shot = analyse_shot(exit_velocity, delivery_report.length_label)   # exit_veloci
 print(shot.shot, shot.region, shot.confidence)
 ```
 
+**7. Combine the sensor with video.** `shot_fusion.fuse_shot(sensor_shot,
+video_shot)` treats the ball (sensor) and the batter's hands (video) as two
+independent witnesses to the same shot. Agreement is reported as corroborated;
+a disagreement is reported, not hidden, and the sensor's name is used (it
+measures the ball); a swing with no contact at the sensor is "swing and a miss"
+only if the video also saw the swing; and nothing is named if neither source
+named anything. It takes plain objects, so this package does not depend on the
+computer-vision package. Whether agreement really makes the answer more
+reliable is one of the questions in `docs/real_world_test_protocol.md`.
+
 ## Persisting a player's progress
 
 `PlayerProfile` is a plain dataclass, so saving it between sessions is a
