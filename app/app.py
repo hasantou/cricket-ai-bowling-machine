@@ -40,7 +40,7 @@ from live_video_source import LiveVideoSource
 from live_delivery_detector import LiveDeliveryDetector
 from cricket_trajectory import (
     BallProperties, Environment, PlayerProfile, expected_success, OUTCOME_SCORES,
-    Scorecard, classify_delivery_legality, run_simulation,
+    Scorecard, classify_delivery_legality, run_simulation, score_outcome,
 )
 from cricket_trajectory.adaptive import suggest_next_delivery, delivery_difficulty_rating
 from cricket_trajectory.machine import WheelMachine
@@ -954,14 +954,19 @@ else:
                     else:
                         r = st.session_state.traj_sensor_reading
                         ev = r["exit_velocity"]
+                        scoring = score_outcome(r["outcome"])
+                        scoring_text = (
+                            f"OUT ({scoring.dismissal})" if scoring.is_wicket
+                            else f"{scoring.runs} run{'s' if scoring.runs != 1 else ''}"
+                        )
                         if ev is None:
-                            st.warning("Sensor reading: no contact detected.")
+                            st.warning(f"Sensor reading: no contact detected. → **{scoring_text}**")
                         else:
                             st.info(
                                 f"Sensor reading: **{ev.speed_mps:.1f} m/s** ({ev.speed_mps*3.6:.0f} km/h), "
                                 f"elevation **{ev.elevation_deg:.0f}°**, "
-                                f"direction **{ev.direction_label()}** ({ev.azimuth_deg:+.0f}°) "
-                                f"→ classified as **{r['label']}**"
+                                f"direction **{ev.direction_label()}** ({ev.azimuth_deg:+.0f}°)\n\n"
+                                f"→ classified as **{r['label']}** → **{scoring_text}**"
                             )
                         if st.button("Log delivery", type="primary"):
                             card.record_ball(profile, ball, next_ball, sim_result, outcome=r["outcome"])
