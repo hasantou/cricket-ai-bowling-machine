@@ -29,6 +29,7 @@ from .scorecard import (
     score_outcome,
     classify_delivery_legality,
 )
+from .delivery_report import DeliveryReport, build_delivery_report
 from .net_outcome import (
     NetOutcome,
     NET_OUTCOMES,
@@ -55,6 +56,8 @@ __all__ = [
     "DEFAULT_SCORING",
     "score_outcome",
     "classify_delivery_legality",
+    "DeliveryReport",
+    "build_delivery_report",
     "NetOutcome",
     "NET_OUTCOMES",
     "classify_net_outcome",

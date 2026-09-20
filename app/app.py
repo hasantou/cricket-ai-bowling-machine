@@ -33,14 +33,15 @@ from scoring import MasteryScorer, OUTCOME_QUALITY, MASTERY_THRESHOLD, MIN_SAMPL
 from neural_scorer import NeuralMasteryScorer
 from recommender import recommend_next_styles, explain_recommendation
 from styles import STYLE_LIBRARY, STYLE_BY_KEY
-from video_pipeline import estimate_outcomes_from_video
+from video_pipeline import analyse_video, _expected_frame_count
+from footage_check import assess_footage
 from pose_estimation import PoseEstimator
 from outcome_bridge import VisionOutcomeEstimator
 from live_video_source import LiveVideoSource
 from live_delivery_detector import LiveDeliveryDetector
 from cricket_trajectory import (
     BallProperties, Environment, PlayerProfile, expected_success, OUTCOME_SCORES,
-    Scorecard, classify_delivery_legality, run_simulation, score_outcome,
+    Scorecard, classify_delivery_legality, run_simulation, score_outcome, build_delivery_report,
 )
 from cricket_trajectory.adaptive import suggest_next_delivery, delivery_difficulty_rating
 from cricket_trajectory.machine import WheelMachine
@@ -281,16 +282,19 @@ def _simulate_impact_velocity(expected_success_pct: float, rng: random.Random):
 
 
 @st.cache_data(show_spinner="Running pose estimation on the clip...")
-def _analyse_clip(video_bytes: bytes, suffix: str):
-    """Cached on the uploaded file's bytes so re-running the app (e.g. the
-    user picking a different delivery from the dropdown below) doesn't
-    re-run pose estimation on the whole clip every time — that's real
-    compute, not free, especially on a multi-minute session clip."""
+def _analyse_clip(video_bytes: bytes, suffix: str, analyse_bowler: bool = False):
+    """Cached on the uploaded file's bytes (and the bowler option) so
+    re-running the app (e.g. the user picking a different delivery from the
+    dropdown below) doesn't re-run pose estimation on the whole clip every
+    time — that's real compute, not free, especially on a multi-minute
+    session clip. Returns a video_pipeline.VideoAnalysis: the batter's
+    estimates, a footage-quality verdict, and (only if asked) the bowler's
+    action per delivery."""
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(video_bytes)
         tmp_path = tmp.name
     try:
-        return estimate_outcomes_from_video(tmp_path)
+        return analyse_video(tmp_path, analyse_bowler=analyse_bowler)
     finally:
         os.unlink(tmp_path)
 
@@ -308,7 +312,9 @@ def _analyse_clip_live(video_bytes: bytes, suffix: str):
     that validation script uses — a file and a live camera are identical
     to cv2.VideoCapture.read() in a loop.
 
-    Returns (estimates, frames_processed, frames_with_a_person, elapsed_s, fps).
+    Returns (estimates, frames_processed, frames_with_a_person, elapsed_s, fps,
+    footage_report). (Bowler-action analysis is batch-only: it needs a second,
+    multi-person pass over the frames, which a streaming camera loop doesn't keep.)
     """
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(video_bytes)
@@ -321,6 +327,7 @@ def _analyse_clip_live(video_bytes: bytes, suffix: str):
         estimates = []
         frame_count = 0
         person_frame_count = 0
+        all_landmarks = []
         t0 = time.perf_counter()
         with PoseEstimator() as estimator:
             for frame in source.frames():
@@ -328,14 +335,41 @@ def _analyse_clip_live(video_bytes: bytes, suffix: str):
                 landmarks = estimator.extract_landmarks_from_one_live_frame(frame, fps)
                 if landmarks is not None:
                     person_frame_count += 1
+                    all_landmarks.append(landmarks)
                 for delivery in detector.add_frame(landmarks):
                     window_landmarks = detector.buffered_landmarks()[delivery.start:delivery.end]
                     estimates.append(vision_estimator.estimate(window_landmarks, fps=fps))
         elapsed = time.perf_counter() - t0
         source.close()
-        return estimates, frame_count, person_frame_count, elapsed, fps
+        footage = assess_footage(
+            all_landmarks, frame_count, frames_expected=_expected_frame_count(tmp_path)
+        )
+        return estimates, frame_count, person_frame_count, elapsed, fps, footage
     finally:
         os.unlink(tmp_path)
+
+
+def _show_footage_report(footage):
+    """Plain-language verdict on whether this clip is good enough for
+    pose-based analysis to mean anything (cv-pipeline/footage_check.py)."""
+    text = (
+        f"**Footage quality: {footage.verdict.upper()}** — person {footage.person_height_fraction * 100:.0f}% "
+        f"of frame height, found in {footage.detection_rate * 100:.0f}% of frames, "
+        f"pose confidence {footage.median_visibility:.2f}. " + " ".join(footage.reasons)
+    )
+    {"good": st.success, "marginal": st.warning, "poor": st.error}[footage.verdict](text)
+
+
+def _bowler_action_rows(action):
+    return [
+        ("Arm", action.arm_side),
+        ("Action", f"{action.arm_action_label} (~{action.arm_angle_deg:.0f}° from vertical, projected)"),
+        ("Release height", f"{action.release_height_torsos:.2f} torso-lengths above the shoulder"),
+        ("Run-up pace", f"{action.run_up_speed_torsos_per_s:.1f} torso-lengths/s"),
+        ("Arm speed", f"{action.arm_speed_torsos_per_s:.0f} torso-lengths/s"),
+        ("Release → batter's swing",
+         f"{action.release_to_swing_s:.2f} s" if action.release_to_swing_s is not None else "n/a"),
+    ]
 
 
 if "engine_family" not in st.session_state:
@@ -653,14 +687,26 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                 ["Batch (whole clip at once)", "Live (frame-by-frame, as if streaming from the machine's camera)"],
                 horizontal=True,
             )
+            analyse_bowler = st.checkbox(
+                "Also read the bowler's action (Batch mode; slower)",
+                value=False,
+                help="Runs a second, multi-person pose pass. Only works where the bowler is in shot, "
+                     "large enough, and delivers with the arm overhead — otherwise it says so. "
+                     "Never estimates ball speed, line, length, swing or spin: a phone clip can't show those.",
+            )
             vision_estimates = None
+            bowler_actions = None
+            footage = None
             if clip is not None:
                 suffix = os.path.splitext(clip.name)[1]
                 try:
                     if processing_mode.startswith("Batch"):
-                        vision_estimates = _analyse_clip(clip.getvalue(), suffix)
+                        analysis = _analyse_clip(clip.getvalue(), suffix, analyse_bowler)
+                        vision_estimates = analysis.estimates
+                        footage = analysis.footage
+                        bowler_actions = analysis.bowler_actions if analyse_bowler else None
                     else:
-                        vision_estimates, n_frames, n_person_frames, elapsed, live_fps = _analyse_clip_live(
+                        vision_estimates, n_frames, n_person_frames, elapsed, live_fps, footage = _analyse_clip_live(
                             clip.getvalue(), suffix
                         )
                         st.caption(
@@ -686,6 +732,9 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                 except ValueError as e:
                     st.error(str(e))
 
+            if footage is not None:
+                _show_footage_report(footage)
+
             row_outcomes = []
             if vision_estimates:
                 n = len(vision_estimates)
@@ -705,6 +754,26 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                         key=f"video_outcome_{i}", label_visibility="collapsed",
                     )
                     row_outcomes.append(row_outcome)
+                    if bowler_actions is not None:
+                        action = bowler_actions[i]
+                        if action is None:
+                            st.caption(
+                                f"Delivery {i + 1} — bowler: no overhead bowling action found (the bowler "
+                                "may be out of shot, too small, or deliver low/side-on). Nothing is guessed."
+                            )
+                        else:
+                            with st.expander(f"Delivery {i + 1} — bowler's action (estimate from pose)"):
+                                st.markdown(
+                                    "| Detail | Estimate |\n|---|---|\n"
+                                    + "\n".join(f"| **{a}** | {b} |" for a, b in _bowler_action_rows(action))
+                                )
+                                st.caption(" ".join(action.caveats))
+                st.caption(
+                    "From video the app can estimate the **batter's** footwork and timing and, where "
+                    "visible, the **bowler's action**. Ball speed, line, length, swing and spin are not "
+                    "measured from video — on the machine those come from the delivery report and the "
+                    "release / impact sensors."
+                )
                 with st.expander("Raw features for all detected deliveries"):
                     st.json([est.features.__dict__ for est in vision_estimates])
 
@@ -787,6 +856,25 @@ else:
             f"(engine targets ~{st.session_state.traj_target_success*100:.0f}%, "
             "adjustable in the sidebar)"
         )
+        sent_speed = (
+            st.session_state.get("traj_last_release_speed")
+            if st.session_state.traj_delivery_sent else None
+        )
+        delivery_report = build_delivery_report(next_ball, sim_result, measured_release_speed_mps=sent_speed)
+        with st.expander("How this ball is bowled — delivery report", expanded=True):
+            report_table = "| Detail | Value |\n|---|---|\n" + "\n".join(
+                f"| **{label}** | {value} |" for label, value in delivery_report.rows()
+            )
+            st.markdown(report_table)
+            st.caption(
+                "Built from what the machine was commanded to do plus the physics simulation of "
+                "the flight (`trajectory-engine/cricket_trajectory/delivery_report.py`) — real data "
+                "the machine already has, no video needed. Length and line are measured where the "
+                "ball first pitches, using conventional coaching bands (adjustable, uncalibrated). "
+                + ("The sensor-confirmed pace is the (simulated) release-point sensor's reading."
+                   if sent_speed is not None else
+                   "Send the delivery to see the release sensor's confirmed pace here.")
+            )
         spin_mag = sum(w * w for w in next_ball.spin_rad_s) ** 0.5
         machine = st.session_state.traj_wheel_machine
         rpm1, rpm2 = machine.wheel_rpms_for_delivery(next_ball.speed_mps, spin_mag, ball)
@@ -875,6 +963,7 @@ else:
                     # calibrator so speed_efficiency keeps correcting itself.
                     st.session_state.traj_release_sensor.arm(rpm1, rpm2)
                     measured = st.session_state.traj_release_sensor.measure_speed_mps()
+                    st.session_state.traj_last_release_speed = measured
                     st.session_state.traj_speed_calibrator.record(rpm1, rpm2, measured)
                     st.session_state.traj_speed_calibrator.apply_calibration()
                     st.session_state.traj_delivery_sent = True
@@ -1071,6 +1160,15 @@ with st.expander("What's real here vs. what's a placeholder"):
         "bugs found and fixed doing that — see `cv-pipeline/README.md`). No real camera "
         "exists yet; Live mode here is fed the same uploaded file, same honest stand-in "
         "the validation itself uses.\n"
+        "- **Video: what it can and can't tell you**: a *footage-quality* verdict (person "
+        "size, pose confidence, dropouts, undecodable frames) is shown for every clip. From "
+        "video the app estimates the **batter's** footwork and timing, and — optionally, and "
+        "only where the bowler is in shot, large, and delivers overhead — the **bowler's "
+        "action** (arm side, arm angle, release height, run-up pace; in torso-lengths, "
+        "not km/h). Ball speed, line, length, swing and spin are **not** measured from "
+        "video. The bowler-action reading is tested on synthetic skeletons only: none of "
+        "the real clips available so far shows a bowler close enough to validate it, and "
+        "an earlier version mistook a batter's backlift for a delivery (fixed).\n"
         "- **Placeholder for this MVP, by design**: shot outcome (middled/edged/missed/...) "
         "is always entered by a human in the style-library engine — ball tracking against "
         "the bat isn't built.\n"

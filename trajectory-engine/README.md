@@ -130,6 +130,26 @@ print(card.render_text())
 See `demo_scorecard.py` for the full loop: bowl, check legality, score the
 outcome, update the player's adaptive rating, ask for the next delivery, repeat.
 
+**5. Describe how the ball is bowled.** `delivery_report.py` turns a
+delivery and its simulated flight into what a coach would say: length
+(yorker / full / good / short-of-a-length / short, plus metres from the
+stumps), line (off / middle / leg, wide), swing, spin, speed at release and
+at the pitch, and legality. `build_delivery_report(delivery, result,
+measured_release_speed_mps=...)` also carries the release sensor's reading,
+so the report shows commanded vs. measured speed side by side. The pitch
+point and swing are the physics model's **prediction** from the commanded
+delivery, not a measurement of the real ball — on hardware the release
+sensor supplies the speed, and nothing yet measures where the real ball
+lands. Length/line boundaries are named, adjustable constants (judgment
+calls, not a governing-body standard).
+
+```python
+from cricket_trajectory import build_delivery_report
+report = build_delivery_report(delivery, run_simulation(ball, env, delivery))
+for label, value in report.rows():
+    print(f"{label}: {value}")
+```
+
 ## Persisting a player's progress
 
 `PlayerProfile` is a plain dataclass, so saving it between sessions is a

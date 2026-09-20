@@ -218,6 +218,49 @@ prove a real camera mounted on a real machine works, since no such camera
 exists yet — `LiveVideoSource` opening a real device is unexercised code,
 identical in shape to opening a file, but unexercised all the same.
 
+## Is this clip good enough? And what about the bowler?
+
+Two additions for "how the ball was bowled and how the batter did" from
+video — both deliberately limited to what a phone clip can honestly show.
+
+**`footage_check.py`** turns a silent failure into a visible warning. Pose
+analysis on a poor clip still produces plausible-looking footwork/timing
+verdicts; nothing in the output says the input was bad. It measures how big
+the tracked person is, how sure the model is of the joints, how often a
+person is found, and whether the file decoded fully (frames read vs.
+frames the container promises), and gives good / marginal / poor with
+reasons. Thresholds are judgment calls from a handful of clips, not
+calibrated. (Checking it on real footage also corrected one of my own
+guesses: I had assumed the arena clip's batter would be tiny; measured, they
+are 37% of the frame.)
+
+**`bowler_analysis.py`** reads the bowler's *body*: arm side, projected arm
+angle (high / three-quarter / round-arm), release height, run-up pace and
+arm speed (in torso-lengths per second — one camera has no real-world
+scale), and release-to-swing time. It runs a second multi-person pose pass
+and follows people frame to frame. It does **not** and cannot say ball
+speed, line, length, swing or spin from video — the machine's
+`DeliveryReport` (`trajectory-engine/`) and its release/impact sensors
+provide those.
+
+What testing against real footage found, honestly:
+
+- The first version returned nonsense on a real clip (it measured against
+  nose-to-ankle height, which collapses when a bowler bends double after
+  release). Rebuilt on torso length with an upright-torso requirement.
+- A scan of the other real clips reported "bowlers" with the wrist 11–15
+  torso-lengths above the shoulder — physically impossible (a near-zero
+  torso length from a glitchy skeleton). Such frames are now discarded.
+- The remaining "bowler" hits, when I looked at the actual frame, were the
+  **batter** stepping out and lifting the bat. Pose alone cannot tell a
+  backlift from a delivery, so the known batter (the person the batter
+  analysis followed) is now excluded from bowler candidates.
+- After that, none of the real clips I have shows a bowler close enough to
+  analyse, and the app correctly says "no overhead bowling action found".
+  **The positive case — correctly reading a real bowler's action — is
+  tested on synthetic skeletons only, not yet validated on real footage.**
+  It needs a clip with the bowler in shot and large enough.
+
 ## What isn't built yet
 
 - A real ball detector — `ball_tracking.py` above assumes one exists;
@@ -260,7 +303,7 @@ python cv-pipeline/demo_live_delivery_detection.py path/to/clip.mp4   # the live
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-57 tests: feature-extraction math (including `footwork_lead_seconds`) and
+85 tests: feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the

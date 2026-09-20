@@ -43,7 +43,7 @@ def download_model() -> str:
 
 
 class PoseEstimator:
-    def __init__(self, model_path: str = MODEL_PATH):
+    def __init__(self, model_path: str = MODEL_PATH, num_poses: int = 1):
         if not os.path.exists(model_path):
             raise FileNotFoundError(
                 f"No pose-landmarker model at {model_path}. Call "
@@ -53,6 +53,7 @@ class PoseEstimator:
         options = mp_vision.PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=model_path),
             running_mode=mp_vision.RunningMode.VIDEO,
+            num_poses=num_poses,
         )
         self._landmarker = mp_vision.PoseLandmarker.create_from_options(options)
         # MediaPipe's VIDEO mode enforces strictly increasing timestamps for
@@ -115,6 +116,22 @@ class PoseEstimator:
         if result.pose_landmarks:
             return [(lm.x, lm.y, lm.visibility) for lm in result.pose_landmarks[0]]
         return None
+
+    def extract_all_poses_from_one_live_frame(self, frame_bgr, fps: float):
+        """Like extract_landmarks_from_one_live_frame(), but returns EVERY
+        person the model found in this frame (a list of landmark lists,
+        possibly empty) instead of just the first — needed to see a bowler
+        and a batter in the same frame. Only returns more than one pose if
+        this PoseEstimator was created with num_poses > 1."""
+        rgb = np.ascontiguousarray(frame_bgr[:, :, ::-1])
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        timestamp_ms = self._next_timestamp_ms
+        result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
+        self._next_timestamp_ms = timestamp_ms + max(1, int(1000.0 / fps))
+        return [
+            [(lm.x, lm.y, lm.visibility) for lm in pose]
+            for pose in (result.pose_landmarks or [])
+        ]
 
     def close(self):
         self._landmarker.close()
