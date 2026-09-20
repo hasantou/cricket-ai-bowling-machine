@@ -42,6 +42,7 @@ from live_delivery_detector import LiveDeliveryDetector
 from cricket_trajectory import (
     BallProperties, Environment, PlayerProfile, expected_success, OUTCOME_SCORES,
     Scorecard, classify_delivery_legality, run_simulation, score_outcome, build_delivery_report,
+    analyse_shot,
 )
 from cricket_trajectory.adaptive import suggest_next_delivery, delivery_difficulty_rating
 from cricket_trajectory.machine import WheelMachine
@@ -1057,6 +1058,17 @@ else:
                                 f"direction **{ev.direction_label()}** ({ev.azimuth_deg:+.0f}°)\n\n"
                                 f"→ classified as **{r['label']}** → **{scoring_text}**"
                             )
+                        shot = analyse_shot(ev, delivery_report.length_label)
+                        with st.expander(f"What shot was it? — {shot.shot}", expanded=True):
+                            st.markdown(
+                                "| Detail | Value |\n|---|---|\n"
+                                + "\n".join(f"| **{a}** | {b} |" for a, b in shot.rows())
+                            )
+                            st.caption(
+                                shot.rationale + " This is an inference from the ball's direction, height, "
+                                "pace and length — a rule table, not a coach's verdict. Right-handed batter "
+                                "assumed. Here the sensor reading is simulated."
+                            )
                         if st.button("Log delivery", type="primary"):
                             card.record_ball(profile, ball, next_ball, sim_result, outcome=r["outcome"])
                             st.session_state.traj_next_delivery = suggest_next_delivery(
@@ -1169,6 +1181,12 @@ with st.expander("What's real here vs. what's a placeholder"):
         "video. The bowler-action reading is tested on synthetic skeletons only: none of "
         "the real clips available so far shows a bowler close enough to validate it, and "
         "an earlier version mistook a batter's backlift for a delivery (fixed).\n"
+        "- **Shot naming (physics engine)**: after a sensor reading, the app names the shot "
+        "(cover drive, pull, forward defence, ...) from the ball's exit direction, height and "
+        "pace plus the delivery's length (`trajectory-engine/shot_analysis.py`). It is an "
+        "inference from a rule table — not a measurement, not a coach's verdict, right-handed "
+        "batter only — and the sensor reading here is simulated. Front/back foot is inferred "
+        "from the ball's length unless observed. Not yet checked against real shots.\n"
         "- **Placeholder for this MVP, by design**: shot outcome (middled/edged/missed/...) "
         "is always entered by a human in the style-library engine — ball tracking against "
         "the bat isn't built.\n"

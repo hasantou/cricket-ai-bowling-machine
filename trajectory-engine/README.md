@@ -150,6 +150,26 @@ for label, value in report.rows():
     print(f"{label}: {value}")
 ```
 
+**6. Name the shot.** `shot_analysis.py` infers which shot was played from
+what the post-contact sensor saw the ball do (exit speed, launch angle,
+direction) plus the delivery's length: "cover drive", "pull", "square cut",
+"forward defence", "mistimed / skied hit", and so on, with where the ball
+went (mid-off, cover, midwicket, ...). Where the ball went is what defines
+most named shots, which is why this comes from the sensor and not from video.
+
+It is an **inference from a rule table**, not a measurement and not a coach's
+verdict: direction bands and length groupings are named, uncalibrated
+conventions, and it assumes a right-handed batter. If the batter's footwork
+isn't supplied, front/back foot is *inferred from the ball's length* and the
+result is marked "approximate"; pass an observed `footwork` (e.g. from video)
+and it is marked "firm". It has not been checked against a coach's labels.
+
+```python
+from cricket_trajectory import analyse_shot
+shot = analyse_shot(exit_velocity, delivery_report.length_label)   # exit_velocity None = no contact
+print(shot.shot, shot.region, shot.confidence)
+```
+
 ## Persisting a player's progress
 
 `PlayerProfile` is a plain dataclass, so saving it between sessions is a
