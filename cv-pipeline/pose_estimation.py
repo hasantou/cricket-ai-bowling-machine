@@ -26,6 +26,10 @@ from mediapipe.tasks.python.core.base_options import BaseOptions
 from feature_extraction import FrameLandmarks
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+# Google publishes three sizes of the same BlazePose landmarker: lite (fast, ~6MB), full and
+# heavy (slower, larger, more accurate). "lite" stays the default everywhere; the others exist
+# so accuracy can be MEASURED against speed on real footage rather than assumed.
+MODEL_VARIANTS = ("lite", "full", "heavy")
 MODEL_PATH = os.path.join(MODEL_DIR, "pose_landmarker_lite.task")
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
@@ -33,22 +37,39 @@ MODEL_URL = (
 )
 
 
-def download_model() -> str:
-    """Fetches Google's official pretrained pose-landmarker weights
-    (~5.5MB, from MediaPipe's own model storage). Call this deliberately,
+def model_path_for(variant: str = "lite") -> str:
+    if variant not in MODEL_VARIANTS:
+        raise ValueError(f"variant must be one of {MODEL_VARIANTS}")
+    return os.path.join(MODEL_DIR, f"pose_landmarker_{variant}.task")
+
+
+def model_url_for(variant: str = "lite") -> str:
+    if variant not in MODEL_VARIANTS:
+        raise ValueError(f"variant must be one of {MODEL_VARIANTS}")
+    return (
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+        f"pose_landmarker_{variant}/float16/1/pose_landmarker_{variant}.task"
+    )
+
+
+def download_model(variant: str = "lite") -> str:
+    """Fetches Google's official pretrained pose-landmarker weights (lite ~6MB,
+    heavy ~31MB, from MediaPipe's own model storage). Call this deliberately,
     once — nothing in this module calls it automatically."""
     os.makedirs(MODEL_DIR, exist_ok=True)
-    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    return MODEL_PATH
+    path = model_path_for(variant)
+    urllib.request.urlretrieve(model_url_for(variant), path)
+    return path
 
 
 class PoseEstimator:
-    def __init__(self, model_path: str = MODEL_PATH, num_poses: int = 1):
+    def __init__(self, model_path: str = None, num_poses: int = 1, variant: str = "lite"):
+        model_path = model_path or model_path_for(variant)
         if not os.path.exists(model_path):
             raise FileNotFoundError(
                 f"No pose-landmarker model at {model_path}. Call "
                 "pose_estimation.download_model() once (downloads Google's "
-                "official ~5.5MB pretrained weights), then retry."
+                f"official pretrained weights; variant={variant!r}), then retry."
             )
         options = mp_vision.PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=model_path),

@@ -26,6 +26,8 @@ from typing import List, Optional
 import cv2
 
 from body_vector_render import draw_body_vectors, to_jpeg
+from camera_motion import CameraMotionTracker, build_path, stabilize, stabilize_pose
+from cut_detection import effective_fps, find_cuts_from_changes, frame_changes, thumbnail, duplicate_fraction
 from body_vectors import BodyVectorReport, analyse_body_vectors
 
 from bowler_analysis import hip_center, BowlerActionEstimate, analyse_bowler_action
@@ -103,6 +105,9 @@ BOWLER_FRAME_STEP = 2   # analyse every 2nd frame - the bowler's motion is smoot
 BODY_LOOKBACK_SECONDS = 0.6      # body-vector window around a delivery's swing peak
 BODY_LOOKAHEAD_SECONDS = 0.8
 OVERLAY_MAX_WIDTH = 640          # annotated peak-frame images are downscaled to this width
+MAX_POSE_SIDE = 1280             # frames larger than this (longest side) are shrunk for the pose model
+CUT_CLEARANCE_SECONDS = 0.25     # a swing peak this close to an edit cut is the cut, not a swing
+CUT_EVENT_GAP_SECONDS = 0.5      # cuts closer together than this are one transition
 
 
 @dataclass
@@ -112,6 +117,12 @@ class VideoAnalysis:
     bowler_actions: List[Optional[BowlerActionEstimate]]   # aligned with `estimates`; None = no bowler found
     body_vectors: List[Optional[BodyVectorReport]] = field(default_factory=list)   # aligned with `estimates`
     vector_images: List[Optional[bytes]] = field(default_factory=list)             # annotated peak frame (JPEG), aligned
+    container_fps: float = 0.0
+    effective_fps: float = 0.0                                                       # genuinely different frames per second
+    cut_events: List[int] = field(default_factory=list)                              # frames where an edit cut/transition begins
+    clip_notes: List[str] = field(default_factory=list)                              # facts about the file worth telling the user
+    delivery_notes: List[List[str]] = field(default_factory=list)                    # per delivery, aligned
+    camera_moved: bool = False                                                       # positions were corrected for camera motion
 
 
 def _typical_hip(window_landmarks):
@@ -131,69 +142,192 @@ def _swing_frame(window_start: int, frame_of: List[int], fps: float) -> int:
     return frame_of[min(window_start + int(WINDOW_BEFORE_PEAK_SEC * fps), len(frame_of) - 1)]
 
 
+def _shrink(frame):
+    """Downscale for the pose model only (landmarks are normalised, so results carry
+    over); a 1080x1920 phone video is otherwise several times slower for no gain."""
+    h, w = frame.shape[:2]
+    longest = max(h, w)
+    if longest <= MAX_POSE_SIDE:
+        return frame
+    scale = MAX_POSE_SIDE / longest
+    return cv2.resize(frame, (int(round(w * scale)), int(round(h * scale))), interpolation=cv2.INTER_AREA)
+
+
+def _iter_wanted_frames(video_path: str, wanted):
+    """Yield (index, frame) for just the wanted frame indices, decoding sequentially
+    (exact, unlike seeking) and holding one frame at a time."""
+    if not wanted:
+        return
+    last = max(wanted)
+    cap = cv2.VideoCapture(video_path)
+    try:
+        i = 0
+        while i <= last:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if i in wanted:
+                yield i, frame
+            i += 1
+    finally:
+        cap.release()
+
+
+def _cluster(cuts: List[int], fps: float) -> List[int]:
+    events: List[int] = []
+    for c in cuts:
+        if not events or c - events[-1] > CUT_EVENT_GAP_SECONDS * fps:
+            events.append(c)
+    return events
+
+
 def analyse_video(
     video_path: str, estimator: PoseEstimator = None, analyse_bowler: bool = False,
     max_deliveries: int = None,
 ) -> VideoAnalysis:
-    """Everything estimate_outcomes_from_video() does (the batter's
-    footwork and timing per delivery — unchanged code path), plus a verdict
-    on whether the footage is good enough to trust, plus — only if asked,
-    since it runs a second, multi-person pose pass — the bowler's action
-    for each delivery. A bowler who isn't in shot (or doesn't raise a hand
-    overhead) comes back as None for that delivery, not a guess."""
+    """Everything estimate_outcomes_from_video() does (the batter's footwork and
+    timing per delivery), plus a footage-quality verdict, body-movement vectors per
+    delivery, and — only if asked, since it needs a second multi-person pose pass — the
+    bowler's action.
+
+    Memory: frames are decoded one at a time and only landmarks and a tiny thumbnail per
+    frame are kept, so a long or high-resolution phone video no longer has to fit in RAM
+    (the earlier version held every decoded frame: ~1.8 GB for a 26 s 720x1040 clip, and
+    ~5 GB for a 30 s 1080x1920 one). The few frames needed later (overlays, the bowler
+    pass) are re-read from the file.
+
+    Edited clips: hard cuts are detected; a swing peak sitting on a cut is dropped (the
+    person 'teleporting' reads as a huge fake swing) and measurements never span a cut. The
+    file's real frame rate is also reported, because clips exported at '60 fps' are often 30
+    unique fps with every frame doubled."""
     owns_estimator = estimator is None
     estimator = estimator or PoseEstimator()
     try:
-        frames, fps = _read_frames(video_path)
-        aligned = estimator.extract_aligned_landmarks_from_frames(frames, fps)
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        thumbs = []
+        shifts = []
+        tracker = CameraMotionTracker()
+
+        def stream():
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    return
+                thumbs.append(thumbnail(frame))
+                shifts.append(tracker.push(frame))
+                yield _shrink(frame)
+
+        try:
+            aligned = estimator.extract_aligned_landmarks_from_frames(stream(), fps)
+        finally:
+            cap.release()
+        n_frames = len(aligned)
         frame_of = [i for i, lm in enumerate(aligned) if lm is not None]   # landmark index -> real frame index
-        landmarks = [aligned[i] for i in frame_of]
-        if not landmarks:
+        if not frame_of:
             raise ValueError(
                 f"No person detected in any frame of {video_path} — check the clip actually "
                 "shows a batter in frame, or that the model downloaded correctly."
             )
-        footage = assess_footage(landmarks, len(frames), frames_expected=_expected_frame_count(video_path))
-        windows = find_delivery_windows(landmarks, fps, max_deliveries=max_deliveries)
+        changes = frame_changes(thumbs)
+        del thumbs
+        cut_events = _cluster(find_cuts_from_changes(changes), fps)
+        # Remove the camera's own movement from every landmark, so a person standing still in the
+        # world has constant coordinates (identical output for tripod footage).
+        path = build_path(shifts, cut_events)
+        raw_aligned = aligned
+        aligned = stabilize(aligned, path)
+        landmarks = [aligned[i] for i in frame_of]
+        eff_fps = effective_fps(fps, changes)
+        clip_notes: List[str] = []
+        if eff_fps < 0.8 * fps:
+            clip_notes.append(
+                f"The file says {fps:.0f} fps but only about {eff_fps:.0f} frames per second are genuinely different "
+                f"({duplicate_fraction(changes):.0%} are repeats) — typical of an exported/converted video. Timing "
+                "is still correct, but fast movements are sampled less finely."
+            )
+        clip_notes.extend(path.notes)
+        if cut_events:
+            clip_notes.append(
+                f"{len(cut_events)} edit cut/transition point(s) at frame(s) {cut_events}. Deliveries are measured only "
+                "within an uncut stretch, and a swing peak sitting on a cut is dropped."
+            )
+
+        footage = assess_footage(landmarks, n_frames, frames_expected=_expected_frame_count(video_path))
+        raw_windows = find_delivery_windows(landmarks, fps, max_deliveries=max_deliveries)
+        clearance = CUT_CLEARANCE_SECONDS * fps
+        windows, dropped = [], 0
+        for w in raw_windows:
+            peak = _swing_frame(w[0], frame_of, fps)
+            if any(abs(peak - c) <= clearance for c in cut_events):
+                dropped += 1
+            else:
+                windows.append(w)
+        if dropped:
+            clip_notes.append(f"{dropped} apparent delivery(ies) were on an edit cut, not a swing, and were dropped.")
+
         vision_estimator = VisionOutcomeEstimator()
         estimates = [vision_estimator.estimate(landmarks[start:end], fps=fps) for start, end in windows]
+        delivery_notes: List[List[str]] = [[] for _ in windows]
 
         bowler_actions: List[Optional[BowlerActionEstimate]] = [None] * len(windows)
-        if analyse_bowler:
-            eff_fps = fps / BOWLER_FRAME_STEP
+        if analyse_bowler and windows:
+            step, eff = BOWLER_FRAME_STEP, fps / BOWLER_FRAME_STEP
+            ranges = []
+            for start, _end in windows:
+                sw = _swing_frame(start, frame_of, fps)
+                ranges.append((max(0, sw - int(BOWLER_LOOKBACK_SECONDS * fps)), min(n_frames, sw + int(BOWLER_LOOKAHEAD_SECONDS * fps)), sw))
+            wanted = {i for lo, hi, _ in ranges for i in range(lo, hi, step)}
+            poses = {}
             with PoseEstimator(num_poses=4) as multi:
-                for k, (start, end) in enumerate(windows):
-                    swing_frame = _swing_frame(start, frame_of, fps)
-                    lo = max(0, swing_frame - int(BOWLER_LOOKBACK_SECONDS * fps))
-                    hi = min(len(frames), swing_frame + int(BOWLER_LOOKAHEAD_SECONDS * fps))
-                    window_poses = [
-                        multi.extract_all_poses_from_one_live_frame(frames[i], eff_fps)
-                        for i in range(lo, hi, BOWLER_FRAME_STEP)
-                    ]
-                    bowler_actions[k] = analyse_bowler_action(
-                        window_poses, eff_fps,
-                        batter_swing_frame=(swing_frame - lo) // BOWLER_FRAME_STEP,
-                        batter_hip=_typical_hip(landmarks[start:end]),
-                    )
+                for i, frame in _iter_wanted_frames(video_path, wanted):
+                    found = multi.extract_all_poses_from_one_live_frame(_shrink(frame), eff)
+                    poses[i] = [stabilize_pose(pz, *path.at(i)) for pz in found] if path.moving else found
+            for k, ((start, end), (lo, hi, sw)) in enumerate(zip(windows, ranges)):
+                bowler_actions[k] = analyse_bowler_action(
+                    [poses.get(i, []) for i in range(lo, hi, step)], eff,
+                    batter_swing_frame=(sw - lo) // step, batter_hip=_typical_hip(landmarks[start:end]),
+                )
+
         body_vectors: List[Optional[BodyVectorReport]] = []
-        vector_images: List[Optional[bytes]] = []
-        aspect = frames[0].shape[1] / frames[0].shape[0]
-        for start, _end in windows:
+        peak_frames: List[Optional[int]] = []
+        aspect = width / height if height else 1.0
+        for k, (start, _end) in enumerate(windows):
             swing = _swing_frame(start, frame_of, fps)
-            lo, hi = max(0, swing - int(BODY_LOOKBACK_SECONDS * fps)), min(len(frames), swing + int(BODY_LOOKAHEAD_SECONDS * fps))
+            lo, hi = max(0, swing - int(BODY_LOOKBACK_SECONDS * fps)), min(n_frames, swing + int(BODY_LOOKAHEAD_SECONDS * fps))
+            before = [c for c in cut_events if c <= swing]
+            after = [c for c in cut_events if c > swing]
+            if before and before[-1] > lo:
+                lo = before[-1]
+            if after and after[0] < hi:
+                hi = after[0]
+            if lo > 0 or hi < n_frames:
+                pass
             report = analyse_body_vectors(aligned[lo:hi], fps, aspect)
+            if report is None and (lo, hi) != (max(0, swing - int(BODY_LOOKBACK_SECONDS * fps)), min(n_frames, swing + int(BODY_LOOKAHEAD_SECONDS * fps))):
+                delivery_notes[k].append("An edit cut leaves too little uncut footage around this swing to measure it.")
+            elif report is not None and (lo > max(0, swing - int(BODY_LOOKBACK_SECONDS * fps)) or hi < min(n_frames, swing + int(BODY_LOOKAHEAD_SECONDS * fps))):
+                delivery_notes[k].append("Measured only within the uncut part of the window (an edit cut is nearby).")
             body_vectors.append(report)
-            image = None
-            if report is not None and aligned[lo + report.peak_frame] is not None:
-                drawn = draw_body_vectors(frames[lo + report.peak_frame], aligned[lo + report.peak_frame], report)
-                if drawn.shape[1] > OVERLAY_MAX_WIDTH:
-                    scale = OVERLAY_MAX_WIDTH / drawn.shape[1]
-                    drawn = cv2.resize(drawn, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-                image = to_jpeg(drawn)
-            vector_images.append(image)
+            peak_frames.append(None if report is None or aligned[lo + report.peak_frame] is None else lo + report.peak_frame)
+
+        vector_images: List[Optional[bytes]] = [None] * len(windows)
+        wanted_peaks = {pf for pf in peak_frames if pf is not None}
+        for i, frame in _iter_wanted_frames(video_path, wanted_peaks):
+            for k, pf in enumerate(peak_frames):
+                if pf == i:
+                    drawn = draw_body_vectors(frame, raw_aligned[i], body_vectors[k], offset=path.at(i) if path.moving else (0.0, 0.0))
+                    if drawn.shape[1] > OVERLAY_MAX_WIDTH:
+                        scale = OVERLAY_MAX_WIDTH / drawn.shape[1]
+                        drawn = cv2.resize(drawn, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                    vector_images[k] = to_jpeg(drawn)
+
         return VideoAnalysis(
             estimates=estimates, footage=footage, bowler_actions=bowler_actions,
             body_vectors=body_vectors, vector_images=vector_images,
+            container_fps=fps, effective_fps=eff_fps, cut_events=cut_events,
+            clip_notes=clip_notes, delivery_notes=delivery_notes, camera_moved=path.moving,
         )
     finally:
         if owns_estimator:

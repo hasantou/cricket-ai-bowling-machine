@@ -57,3 +57,7 @@ machine-control/output/
 # actual secrets are excluded. Ignoring the whole directory here would
 # silently mean the deployed app never picks up the theme at all.
 .streamlit/secrets.toml
+
+# Larger optional pose models (downloaded on demand by pose_estimation.download_model)
+cv-pipeline/models/pose_landmarker_full.task
+cv-pipeline/models/pose_landmarker_heavy.task

@@ -45,10 +45,13 @@ def arrow_tip(origin: Tuple[int, int], vx: float, vy_up: float, torso_px: float)
 
 def draw_body_vectors(
     frame_bgr: np.ndarray, landmarks, report: BodyVectorReport, torso_px: Optional[float] = None,
+    offset: Tuple[float, float] = (0.0, 0.0),
 ) -> np.ndarray:
     """Returns a copy of `frame_bgr` with the skeleton, per-joint vector arrows
     (as at the report's peak moment) and the hand-path trail drawn on it.
-    `landmarks` are the landmarks of that peak frame."""
+    `landmarks` are the landmarks of that peak frame, in image coordinates. If the
+    report was measured on camera-stabilised coordinates, `offset` is the camera path at
+    that frame (normalised), added back so the hand-path trail sits on the picture."""
     img = frame_bgr.copy()
     h, w = img.shape[:2]
     if torso_px is None:
@@ -68,7 +71,7 @@ def draw_body_vectors(
         cv2.line(img, _px(landmarks, JOINTS[a], w, h), _px(landmarks, JOINTS[b], w, h), (230, 230, 230), 1, cv2.LINE_AA)
 
     if len(report.hand_path_points) > 1:
-        pts = np.array([(int(x * w), int(y * h)) for x, y in report.hand_path_points], np.int32)
+        pts = np.array([(int((x + offset[0]) * w), int((y + offset[1]) * h)) for x, y in report.hand_path_points], np.int32)
         cv2.polylines(img, [pts], False, TRAIL, thickness, cv2.LINE_AA)
 
     for name, idx in JOINTS.items():

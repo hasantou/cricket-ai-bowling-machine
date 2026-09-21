@@ -261,6 +261,46 @@ What testing against real footage found, honestly:
   tested on synthetic skeletons only, not yet validated on real footage.**
   It needs a clip with the bowler in shot and large enough.
 
+## Edited, panning, phone-recompressed footage (found using real TikTok clips)
+
+Eight TikTok clips (sent through WhatsApp, so recompressed to ~480 px wide) were run through
+the whole system. What they exposed, and what was built for it:
+
+- **Memory.** Batch analysis held every decoded frame (~1.8 GB for a 26 s clip of 720x1040;
+  ~5 GB for a 30 s 1080x1920 TikTok), which would crash the hosted app. It now streams: one
+  frame at a time, keeping only landmarks and a tiny thumbnail per frame; the few frames needed
+  later (overlays, the bowler pass) are re-read. Measured peak Python/numpy memory on the arena
+  clip: **19 MB, down from ~1,772 MB**, with output identical to before on that clip
+  (verified against a saved baseline). Frames over 1280 px are shrunk for the pose model only.
+- **Edit cuts** (`cut_detection.py`). At a cut the person "teleports", which reads as a huge fake
+  swing. A cut is now an isolated jump after ordinary change and followed by a calm shot; a
+  whip-pan (sustained large change) is not a cut. A swing peak sitting on a cut is dropped, and
+  measurements never span one. On a real clip this removed a fake delivery lying on a cut.
+  Only hard cuts are found (not fades); an end-of-clip whip-pan can still be flagged more than
+  once, which are merged into one transition event.
+- **Real frame rate.** Several clips say 60 fps but repeat every frame (30 real fps). Detected
+  from the alternating repeat/new pattern (a still scene with tiny motion is NOT counted as
+  repeated frames - an early version got that wrong). Controls: two phone-recorded 60 fps clips
+  read 1% repeats; doubled TikTok clips read 50%.
+- **Camera motion** (`camera_motion.py`). Broadcast cameras pan, so a stationary person "runs".
+  Background points are tracked (Lucas-Kanade), the median motion is taken as the camera (people
+  are a minority), and the camera path is subtracted from every landmark, so run-up, weight
+  shift and travel are no longer contaminated. Translation only: a zoom is not modelled. Not
+  applied to still cameras (output identical).
+- **A bigger pose model does not fix hidden hands.** lite / full / heavy on the behind-the-batter
+  clip: both hands confidently seen in 7% / 6% / 7% of frames. The limit is the camera angle
+  (the body hides the hands), not the model. `pose_estimation` now supports the three variants
+  (`PoseEstimator(variant="heavy")`, `download_model("heavy")`); lite stays the default, and the
+  larger model files are git-ignored.
+- **The bowler's action worked on real footage for the first time**: on a Test-match broadcast
+  clip it found the release frame with the arm vertical (checked by eye). On the other clips the
+  arm-speed figures were impossible (60-120 body-lengths/s) because of camera motion and 25-30
+  real fps, so those figures are unreliable until re-measured with camera compensation.
+- **`footwork.py`**: front foot, stride toward the bowler, back-foot shift, weight transfer and
+  lead time, in torso-lengths, relative to the batter's own stance; "unclear" when the ankles are
+  not seen. Front-on/behind, depth is foreshortened, so those thresholds are lower and the result
+  says so. Rules of thumb, not fitted to labelled footwork.
+
 ## Body vectors and shot type from video
 
 **`body_vectors.py`** turns pose landmarks into movement vectors: for every
@@ -389,7 +429,7 @@ python cv-pipeline/demo_live_delivery_detection.py path/to/clip.mp4   # the live
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-147 tests: feature-extraction math (including `footwork_lead_seconds`) and
+183 tests: feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the

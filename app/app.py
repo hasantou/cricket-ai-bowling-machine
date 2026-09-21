@@ -828,6 +828,8 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
             bowler_actions = None
             body_vectors = None
             vector_images = None
+            clip_notes = None
+            delivery_notes = None
             footage = None
             if clip is not None:
                 suffix = os.path.splitext(clip.name)[1]
@@ -839,6 +841,8 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                         bowler_actions = analysis.bowler_actions if analyse_bowler else None
                         body_vectors = analysis.body_vectors
                         vector_images = analysis.vector_images
+                        clip_notes = analysis.clip_notes
+                        delivery_notes = analysis.delivery_notes
                     else:
                         vision_estimates, n_frames, n_person_frames, elapsed, live_fps, footage = _analyse_clip_live(
                             clip.getvalue(), suffix
@@ -868,6 +872,8 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
 
             if footage is not None:
                 _show_footage_report(footage)
+            for note in (clip_notes or []):
+                st.info("About this file: " + note)
 
             row_outcomes = []
             if vision_estimates:
@@ -890,6 +896,8 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                         key=f"video_outcome_{i}", label_visibility="collapsed",
                     )
                     row_outcomes.append(row_outcome)
+                    for note in (delivery_notes[i] if delivery_notes else []):
+                        st.caption(f"Delivery {i + 1}: {note}")
                     if report is not None:
                         with st.expander(f"Delivery {i + 1} — body movement (joint vectors)"):
                             _show_body_vectors(
