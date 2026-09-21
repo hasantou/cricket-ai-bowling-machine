@@ -301,6 +301,28 @@ the whole system. What they exposed, and what was built for it:
   not seen. Front-on/behind, depth is foreshortened, so those thresholds are lower and the result
   says so. Rules of thumb, not fitted to labelled footwork.
 
+## Which person is the batter? (found on a Test-match broadcast clip)
+
+The pose model follows **one person: whoever is most prominent**. On footage filmed from the bowler's end that
+is the **bowler**, so every "batter" reading - swing, footwork, stride, weight transfer - silently described the
+wrong person. Seen directly: the skeleton and arrows sat on the bowler, not the batter at the far end, and nothing
+warned about it. A machine session in a net has one prominent person, the batter, so this does not arise there; it
+matters for match footage and any clip with a human bowler in shot.
+
+The fix is to say where the batter is (`analyse_video(..., roi=(x0, y0, x1, y1))`, "Where is the batter in the
+frame?" in the app). The pose model then sees only that region, **upscaled** (to 720 px tall) so a small batter
+gets many more pixels, and landmarks are mapped back to the whole frame. Measured on the same clip:
+
+|  | person found | both hands confidently seen | who was analysed |
+|---|---|---|---|
+| automatic | 87% | 13% | the bowler |
+| region on the far-end batter | 94% | 32% (28% via the app) | the batter (checked on the frames) |
+
+Still not enough for shot naming: at 14-15% of the frame height the footage is graded POOR and the 60% hands gate
+refuses, correctly. Upscaling helps the model find a small subject; it cannot add detail the camera did not record.
+A fixed region does not follow a panning camera. Footwork readings on poor footage are shown but flagged as
+indicative only.
+
 ## Body vectors and shot type from video
 
 **`body_vectors.py`** turns pose landmarks into movement vectors: for every

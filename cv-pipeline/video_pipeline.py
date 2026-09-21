@@ -105,7 +105,8 @@ BOWLER_FRAME_STEP = 2   # analyse every 2nd frame - the bowler's motion is smoot
 BODY_LOOKBACK_SECONDS = 0.6      # body-vector window around a delivery's swing peak
 BODY_LOOKAHEAD_SECONDS = 0.8
 OVERLAY_MAX_WIDTH = 640          # annotated peak-frame images are downscaled to this width
-MAX_POSE_SIDE = 1280             # frames larger than this (longest side) are shrunk for the pose model
+MAX_POSE_SIDE = 1280             # frames larger than this (longest side) are shrunk for the pose model only
+ROI_TARGET_HEIGHT = 720          # a batter's region smaller than this is upscaled to it before pose (more pixels on a small person)
 CUT_CLEARANCE_SECONDS = 0.25     # a swing peak this close to an edit cut is the cut, not a swing
 CUT_EVENT_GAP_SECONDS = 0.5      # cuts closer together than this are one transition
 
@@ -123,6 +124,8 @@ class VideoAnalysis:
     clip_notes: List[str] = field(default_factory=list)                              # facts about the file worth telling the user
     delivery_notes: List[List[str]] = field(default_factory=list)                    # per delivery, aligned
     camera_moved: bool = False                                                       # positions were corrected for camera motion
+    body_windows: List[Optional[list]] = field(default_factory=list)                 # per delivery: camera-stabilised landmarks, index-aligned with body_vectors
+    aspect: float = 1.0                                                              # frame width / height
 
 
 def _typical_hip(window_landmarks):
@@ -151,6 +154,35 @@ def _shrink(frame):
         return frame
     scale = MAX_POSE_SIDE / longest
     return cv2.resize(frame, (int(round(w * scale)), int(round(h * scale))), interpolation=cv2.INTER_AREA)
+
+
+def crop_to_roi(frame, roi):
+    """Cut out the region where the batter is (normalised x0, y0, x1, y1) and give the pose model more
+    pixels on them: a small region is upscaled (cubic) to ROI_TARGET_HEIGHT. This does two jobs: it picks
+    WHICH person is analysed (a single-person pose model otherwise locks onto whoever is most prominent - on
+    broadcast footage from the bowler's end that is the bowler), and it helps the model find a small subject.
+    It cannot add detail the camera did not record."""
+    h, w = frame.shape[:2]
+    x0, y0, x1, y1 = roi
+    px0, py0 = max(0, int(x0 * w)), max(0, int(y0 * h))
+    px1, py1 = min(w, max(px0 + 8, int(x1 * w))), min(h, max(py0 + 8, int(y1 * h)))
+    crop = frame[py0:py1, px0:px1]
+    ch, cw = crop.shape[:2]
+    scale = ROI_TARGET_HEIGHT / ch if ch < ROI_TARGET_HEIGHT else 1.0
+    if max(ch, cw) * scale > MAX_POSE_SIDE:
+        scale = MAX_POSE_SIDE / max(ch, cw)
+    if abs(scale - 1.0) > 1e-6:
+        crop = cv2.resize(crop, (max(2, int(round(cw * scale))), max(2, int(round(ch * scale)))),
+                          interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
+    return crop
+
+
+def map_roi_landmarks(lm, roi):
+    """Landmarks normalised to the crop -> normalised to the whole frame."""
+    if lm is None:
+        return None
+    x0, y0, x1, y1 = roi
+    return [(x0 + x * (x1 - x0), y0 + y * (y1 - y0), v) for (x, y, v) in lm]
 
 
 def _iter_wanted_frames(video_path: str, wanted):
@@ -183,7 +215,7 @@ def _cluster(cuts: List[int], fps: float) -> List[int]:
 
 def analyse_video(
     video_path: str, estimator: PoseEstimator = None, analyse_bowler: bool = False,
-    max_deliveries: int = None,
+    max_deliveries: int = None, roi=None,
 ) -> VideoAnalysis:
     """Everything estimate_outcomes_from_video() does (the batter's footwork and
     timing per delivery), plus a footage-quality verdict, body-movement vectors per
@@ -199,7 +231,12 @@ def analyse_video(
     Edited clips: hard cuts are detected; a swing peak sitting on a cut is dropped (the
     person 'teleporting' reads as a huge fake swing) and measurements never span a cut. The
     file's real frame rate is also reported, because clips exported at '60 fps' are often 30
-    unique fps with every frame doubled."""
+    unique fps with every frame doubled.
+
+    `roi` (normalised x0, y0, x1, y1), if given, is where the batter is: the pose model sees only that region,
+    upscaled (see crop_to_roi), and landmarks are mapped back to the whole frame. Use it whenever the most
+    prominent person is not the batter, or the batter is small. Camera motion is still measured on the whole
+    frame; a fixed region does not follow a panning camera."""
     owns_estimator = estimator is None
     estimator = estimator or PoseEstimator()
     try:
@@ -217,12 +254,14 @@ def analyse_video(
                     return
                 thumbs.append(thumbnail(frame))
                 shifts.append(tracker.push(frame))
-                yield _shrink(frame)
+                yield crop_to_roi(frame, roi) if roi else _shrink(frame)
 
         try:
             aligned = estimator.extract_aligned_landmarks_from_frames(stream(), fps)
         finally:
             cap.release()
+        if roi:
+            aligned = [map_roi_landmarks(lm, roi) for lm in aligned]
         n_frames = len(aligned)
         frame_of = [i for i, lm in enumerate(aligned) if lm is not None]   # landmark index -> real frame index
         if not frame_of:
@@ -241,6 +280,11 @@ def analyse_video(
         landmarks = [aligned[i] for i in frame_of]
         eff_fps = effective_fps(fps, changes)
         clip_notes: List[str] = []
+        if roi:
+            clip_notes.append(
+                f"The batter was located by a region you set ({roi[0]:.2f},{roi[1]:.2f})-({roi[2]:.2f},{roi[3]:.2f}) and "
+                "that region was upscaled before pose estimation; a fixed region does not follow a panning camera."
+            )
         if eff_fps < 0.8 * fps:
             clip_notes.append(
                 f"The file says {fps:.0f} fps but only about {eff_fps:.0f} frames per second are genuinely different "
@@ -291,6 +335,7 @@ def analyse_video(
                 )
 
         body_vectors: List[Optional[BodyVectorReport]] = []
+        body_windows: List[Optional[list]] = []
         peak_frames: List[Optional[int]] = []
         aspect = width / height if height else 1.0
         for k, (start, _end) in enumerate(windows):
@@ -310,6 +355,7 @@ def analyse_video(
             elif report is not None and (lo > max(0, swing - int(BODY_LOOKBACK_SECONDS * fps)) or hi < min(n_frames, swing + int(BODY_LOOKAHEAD_SECONDS * fps))):
                 delivery_notes[k].append("Measured only within the uncut part of the window (an edit cut is nearby).")
             body_vectors.append(report)
+            body_windows.append(aligned[lo:hi] if report is not None else None)
             peak_frames.append(None if report is None or aligned[lo + report.peak_frame] is None else lo + report.peak_frame)
 
         vector_images: List[Optional[bytes]] = [None] * len(windows)
@@ -328,6 +374,7 @@ def analyse_video(
             body_vectors=body_vectors, vector_images=vector_images,
             container_fps=fps, effective_fps=eff_fps, cut_events=cut_events,
             clip_notes=clip_notes, delivery_notes=delivery_notes, camera_moved=path.moving,
+            body_windows=body_windows, aspect=aspect,
         )
     finally:
         if owns_estimator:

@@ -52,7 +52,9 @@ from cricket_trajectory import (
     analyse_shot,
 )
 from cricket_trajectory.adaptive import delivery_difficulty_rating
-from cricket_trajectory import suggest_aimed_delivery, assess_delivery
+from cricket_trajectory import suggest_aimed_delivery, assess_delivery, build_story, ImpactInfo
+from footwork import analyse_footwork, BOWLER_ON_LEFT, BOWLER_ON_RIGHT, SIDE_ON as _SIDE_ON
+from story_adapter import video_info_from
 from cricket_trajectory.laws import resolve_no_contact
 from machine_control.crease_sensor import (
     LegalityObserver, SimulatedCreaseSensor, NoCrossingDetected, WICKET as _WICKET, POPPING as _POPPING,
@@ -296,7 +298,7 @@ def _simulate_impact_velocity(expected_success_pct: float, rng: random.Random):
 
 
 @st.cache_data(show_spinner="Running pose estimation on the clip...")
-def _analyse_clip(video_bytes: bytes, suffix: str, analyse_bowler: bool = False):
+def _analyse_clip(video_bytes: bytes, suffix: str, analyse_bowler: bool = False, roi=None):
     """Cached on the uploaded file's bytes (and the bowler option) so
     re-running the app (e.g. the user picking a different delivery from the
     dropdown below) doesn't re-run pose estimation on the whole clip every
@@ -308,7 +310,7 @@ def _analyse_clip(video_bytes: bytes, suffix: str, analyse_bowler: bool = False)
         tmp.write(video_bytes)
         tmp_path = tmp.name
     try:
-        return analyse_video(tmp_path, analyse_bowler=analyse_bowler)
+        return analyse_video(tmp_path, analyse_bowler=analyse_bowler, roi=roi)
     finally:
         os.unlink(tmp_path)
 
@@ -374,7 +376,19 @@ def suggest_next_delivery(profile, ball, challenge_margin=60.0):
     )
 
 
-def _show_body_vectors(report, image_bytes, shot_estimate=None):
+def _show_story(story):
+    """One delivery, everything known, each fact labelled with where it came from."""
+    st.markdown("**In words:** " + story.narrative)
+    st.markdown(story.markdown())
+    if story.observations:
+        st.markdown("**Cross-checks (rules of thumb, for a coach to weigh):**\n" + "\n".join(f"- {o}" for o in story.observations))
+    if story.flags:
+        st.warning("**Sources disagree or something needs a look:**\n" + "\n".join(f"- {f}" for f in story.flags))
+    st.caption("Sources: " + ", ".join(f"{k} x{v}" for k, v in sorted(story.provenance.items())) + ". "
+               "Anything marked 'not measured' is genuinely unknown, not left out.")
+
+
+def _show_body_vectors(report, image_bytes, shot_estimate=None, footwork_report=None):
     """The picture and numbers behind one delivery's body movement
     (cv-pipeline/body_vectors.py + body_vector_render.py)."""
     if image_bytes:
@@ -404,6 +418,16 @@ def _show_body_vectors(report, image_bytes, shot_estimate=None):
         f"{report.hip_line_change_deg:+.0f}° from the start of the window to the peak (image plane)"
     )
     st.caption(" ".join(report.caveats))
+    if footwork_report is not None:
+        fwr = footwork_report
+        st.markdown(
+            f"**Footwork: {fwr.footwork_class}** — front foot ({fwr.front_ankle}) "
+            f"{fwr.front_stride:+.2f} torso-lengths toward the bowler, back foot {fwr.back_shift:+.2f}, hips {fwr.hip_shift:+.2f}"
+            + (f"; the stride began {fwr.lead_time_s:.2f} s before the swing peak" if fwr.lead_time_s is not None else "")
+            + f". Confidence in the ankles: {', '.join(f'{k.split()[0]} {v}' for k, v in fwr.ankle_confidence.items())}."
+        )
+        if fwr.notes:
+            st.caption(" ".join(fwr.notes))
     if shot_estimate is not None:
         if shot_estimate.verdict == "cannot tell":
             st.warning("**Shot from video: cannot tell.** " + " ".join(shot_estimate.reasons))
@@ -839,6 +863,27 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                 help="Needed to turn 'hands went screen-right' into off side or leg side.",
             )
             batter_hand = hand_col.selectbox("Batter bats", [_RH, _LH])
+            batter_area = st.selectbox(
+                "Where is the batter in the frame?",
+                ["Automatic (the most prominent person)", "Far end of the pitch (top-centre)", "Left half", "Right half", "Custom box"],
+                help="The pose model follows one person. 'Automatic' picks whoever is most prominent — on footage from the "
+                     "bowler's end that is usually the BOWLER, and every batter reading would then describe the wrong person. "
+                     "Pointing at the batter also lets the model see a small batter at higher magnification.",
+            )
+            _presets = {
+                "Far end of the pitch (top-centre)": (0.30, 0.10, 0.85, 0.60), "Left half": (0.0, 0.0, 0.5, 1.0),
+                "Right half": (0.5, 0.0, 1.0, 1.0),
+            }
+            if batter_area == "Custom box":
+                cx0, cx1 = st.slider("Batter box: left to right (share of the frame width)", 0.0, 1.0, (0.3, 0.8), 0.01)
+                cy0, cy1 = st.slider("Batter box: top to bottom (share of the frame height)", 0.0, 1.0, (0.1, 0.6), 0.01)
+                batter_roi = (cx0, cy0, cx1, cy1)
+            else:
+                batter_roi = _presets.get(batter_area)
+            bowler_side = (
+                st.selectbox("Which side of the frame is the bowler on?", [BOWLER_ON_LEFT, BOWLER_ON_RIGHT])
+                if camera_position == _SIDE_ON else None
+            )
             analyse_bowler = st.checkbox(
                 "Also read the bowler's action (Batch mode; slower)",
                 value=False,
@@ -849,6 +894,8 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
             vision_estimates = None
             bowler_actions = None
             body_vectors = None
+            body_windows = None
+            analysis_meta = None
             vector_images = None
             clip_notes = None
             delivery_notes = None
@@ -857,11 +904,13 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                 suffix = os.path.splitext(clip.name)[1]
                 try:
                     if processing_mode.startswith("Batch"):
-                        analysis = _analyse_clip(clip.getvalue(), suffix, analyse_bowler)
+                        analysis = _analyse_clip(clip.getvalue(), suffix, analyse_bowler, batter_roi)
                         vision_estimates = analysis.estimates
                         footage = analysis.footage
                         bowler_actions = analysis.bowler_actions if analyse_bowler else None
                         body_vectors = analysis.body_vectors
+                        body_windows = analysis.body_windows
+                        analysis_meta = (analysis.container_fps, analysis.aspect)
                         vector_images = analysis.vector_images
                         clip_notes = analysis.clip_notes
                         delivery_notes = analysis.delivery_notes
@@ -921,11 +970,19 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                     for note in (delivery_notes[i] if delivery_notes else []):
                         st.caption(f"Delivery {i + 1}: {note}")
                     if report is not None:
+                        shot_est = estimate_shot_from_video(report, footage, camera_position, batter_hand)
+                        fw_report = analyse_footwork(
+                            body_windows[i], analysis_meta[0], analysis_meta[1], report.peak_frame,
+                            camera_position, batter_hand, bowler_side,
+                        ) if body_windows and body_windows[i] is not None else None
                         with st.expander(f"Delivery {i + 1} — body movement (joint vectors)"):
-                            _show_body_vectors(
-                                report, vector_images[i] if vector_images else None,
-                                estimate_shot_from_video(report, footage, camera_position, batter_hand),
-                            )
+                            _show_body_vectors(report, vector_images[i] if vector_images else None, shot_est, fw_report)
+                        video_story = build_story(None, video=video_info_from(
+                            report, fw_report, shot_est, bowler_actions[i] if bowler_actions else None, footage,
+                            notes=(delivery_notes[i] if delivery_notes else []),
+                        ))
+                        with st.expander(f"Delivery {i + 1} — the whole delivery, in one place (video only)"):
+                            _show_story(video_story)
                     if bowler_actions is not None:
                         action = bowler_actions[i]
                         if action is None:
@@ -1279,6 +1336,17 @@ else:
                                 "pace and length — a rule table, not a coach's verdict. Right-handed batter "
                                 "assumed. Here the sensor reading is simulated."
                             )
+                        impact_info = ImpactInfo(
+                            exit_speed_kmh=None if ev is None else ev.speed_mps * 3.6,
+                            elevation_deg=None if ev is None else ev.elevation_deg,
+                            azimuth_deg=None if ev is None else ev.azimuth_deg,
+                            region=None if ev is None else shot.region, shot=shot.shot, shot_confidence=shot.confidence,
+                            outcome=r["outcome"], outcome_note=r.get("note"), simulated=True,
+                        )
+                        with st.expander("The whole delivery, in one place", expanded=False):
+                            _show_story(build_story(delivery_report, decision=decision, impact=impact_info, simulated_sensors=True))
+                            st.caption("No camera is connected in this view, so the batter's body is 'not measured' here; "
+                                       "in the video view the same story is built from the clip.")
                         with st.expander("Which shots can this tell apart, and which can't it?"):
                             for reason, shots in shot_detectability.items():
                                 st.markdown(
@@ -1422,6 +1490,12 @@ with st.expander("What's real here vs. what's a placeholder"):
         "would have hit the stumps (Law 32). Deliveries are now aimed at a chosen line and length "
         "(`targeting.py`); before that the machine bowled 35% wides and no good-length balls. The crease-plane "
         "sensor shown here is simulated.\n"
+        "- **The whole delivery, in one place**: both views build a story of a single delivery from every "
+        "source, each fact labelled by where it came from (commanded, physics prediction, sensor, video, "
+        "inferred, not measured; simulated sensors say so), with cross-checks and a flag wherever sources "
+        "disagree. Footwork and stride timing are rules of thumb. The video pose model follows one person - "
+        "point it at the batter (\"Where is the batter in the frame?\"), or on footage from the bowler's end it "
+        "will analyse the bowler.\n"
         "- **Placeholder for this MVP, by design**: shot outcome (middled/edged/missed/...) "
         "is always entered by a human in the style-library engine — ball tracking against "
         "the bat isn't built.\n"

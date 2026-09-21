@@ -35,6 +35,7 @@ from .shot_fusion import FusedShot, fuse_shot
 from .laws import DeliveryLegality, WideRules, assess_delivery
 from .crease_crossing import BounceModel, Crossing, predict_crossing
 from .targeting import aim_delivery, suggest_aimed_delivery
+from .delivery_story import DeliveryStory, ImpactInfo, SyncInfo, VideoDeliveryInfo, build_story
 from .net_outcome import (
     NetOutcome,
     NET_OUTCOMES,
@@ -75,6 +76,11 @@ __all__ = [
     "predict_crossing",
     "aim_delivery",
     "suggest_aimed_delivery",
+    "DeliveryStory",
+    "ImpactInfo",
+    "SyncInfo",
+    "VideoDeliveryInfo",
+    "build_story",
     "NetOutcome",
     "NET_OUTCOMES",
     "classify_net_outcome",

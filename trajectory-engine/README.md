@@ -225,6 +225,27 @@ mix (57% good length, 17% full, 13% yorker, 10% short of a length, 3% short). Th
 unchanged - difficulty depends only on pace, seam and spin - so a candidate is picked for difficulty, then aimed.
 The length mix and line corridor are choices, not coaching norms. Solve time is about 2 s per delivery.
 
+**10. Tell the whole story of one delivery.** `delivery_story.build_story()` joins everything known about a
+single ball: how it was bowled (commanded, physics prediction, release sensor), where it went at the batter
+(the Laws-based call, from the crease sensor if there is one), what the batter did (swing, footwork, weight
+transfer, from video), what happened at contact (impact sensor, shot from the ball, shot from the hands, and the
+fused shot), and the result. **Every fact carries its source** - `commanded`, `physics prediction`, `release /
+crease / impact sensor`, `video (pose)`, `video (rule of thumb)`, `inferred` or `not measured` - and anything from a
+simulated sensor says `simulated`. It never fills a gap. On top of the table it adds:
+
+- **cross-checks** (rules of thumb, prompts for a coach): footwork against the length bowled ("went forward to a
+  short ball"), and stride timing against the swing (too late / too early);
+- **flags** where sources disagree: the sensor felt bat but the camera saw no swing; the release sensor differs
+  from the command; the crease sensor overrules the model; the camera and sensor clocks do not line up; the footage
+  is poor;
+- a plain-language **narrative** hedged by source.
+
+`delivery_sync.align()` matches the camera's swing peaks to the sensors' contact times across the two clocks
+(offset search, missed and spurious events left unmatched not forced, drift flagged). It is tested on synthetic
+timestamps only - there is no real machine yet, so real clock jitter, drift and latency are unverified.
+The camera side supplies `cv-pipeline/story_adapter.py`; the video-only view builds a story with no machine data
+and says so.
+
 ## Persisting a player's progress
 
 `PlayerProfile` is a plain dataclass, so saving it between sessions is a
