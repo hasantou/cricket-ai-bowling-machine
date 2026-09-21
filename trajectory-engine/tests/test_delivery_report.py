@@ -123,3 +123,22 @@ def test_a_full_toss_never_reports_a_negative_distance_from_the_stumps():
     length_row = dict(report.rows())["Length"]
     assert "without bouncing" in length_row
     assert "-" not in length_row.split("—")[1]
+
+
+def test_the_report_shows_the_bounce_aware_call_and_would_hit_the_stumps_when_given_an_assessment():
+    from cricket_trajectory import BallProperties, Environment, assess_delivery, run_simulation
+    ball, env = BallProperties(), Environment()
+    d = Delivery(speed_mps=110 / 3.6, vertical_launch_deg=-3.0, horizontal_launch_deg=3.0, label="wide one")
+    rep = build_delivery_report(d, run_simulation(ball, env, d), assessment=assess_delivery(ball, env, d))
+    rows = dict(rep.rows())
+    assert rows["Legality (at the batter)"].startswith("WIDE") and "off side" in rows["Legality (at the batter)"]
+    assert rows["Would hit the stumps"].startswith("no")
+    assert rows["No-ball conditions (counted, not scored)"] == "none"
+    assert rep.legality == "wide"
+
+
+def test_without_an_assessment_the_old_single_legality_row_is_unchanged():
+    from cricket_trajectory import BallProperties, Environment, run_simulation
+    d = Delivery(speed_mps=140 / 3.6, vertical_launch_deg=-3.0)
+    rows = dict(build_delivery_report(d, run_simulation(BallProperties(), Environment(), d)).rows())
+    assert rows["Legality"] == "fair delivery" and "Would hit the stumps" not in rows

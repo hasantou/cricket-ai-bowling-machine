@@ -190,6 +190,41 @@ named anything. It takes plain objects, so this package does not depend on the
 computer-vision package. Whether agreement really makes the answer more
 reliable is one of the questions in `docs/real_world_test_protocol.md`.
 
+**8. Judge the delivery by the Laws.** `laws.py` holds the dimensions and rules a machine can apply,
+read from the source: the MCC *Laws of Cricket* (2017 Code, 3rd edition 2022, 79-page text) and the ICC
+T20 World Cup 2024 playing conditions (URLs and clause numbers are in the module docstring). It also maps
+**all 42 Laws** to what a bowling machine and a net can do with them (`LAWS`, `coverage()`): implemented,
+informational, needs a sensor or a person, or not applicable.
+
+What the source changed in the design: **the Laws do not define a wide by a fixed distance.** Law 22.1 says
+a ball is wide if it passes wide of where the striker stands and is not "sufficiently within reach... by
+means of a normal cricket stroke", judged as it passes the striker's wicket (22.2); the ICC adds that a ball
+above head height at the popping crease is wide (22.1.1.2). The fixed limits used here (0.89 m off side,
+0.5 m leg side) are **proxies for the umpire's judgement**, not the Law; the 0.89 m off-side figure is derived
+from the return crease (Law 7.4, 1.32 m) and a 17 in offset reported by Wisden's explainer, and is not in the
+extractable text of either primary document. Reach, waist height and head height are named `WideRules` fields,
+uncalibrated. `assess_delivery()` returns the call, the margin to the limit (with a 3 cm "borderline" band),
+whether the ball would hit the stumps (Law 32.1; stumps 9 in x 28 in), and informational no-ball conditions
+(pitched off the 3.05 m pitch, Law 21.7; bounced twice; waist-high full toss, Law 41.7.1). **No-balls are
+counted, not scored**: a machine has no front foot.
+
+It rests on `crease_crossing.py`, which carries the ball through its bounce to the batter (the older
+simulation stopped at the first ground contact, so "where it passes the batter" was a proxy). The bounce is a
+simple model (vertical restitution 0.55, horizontal retention 0.75) that is **uncalibrated** - a real
+crease-plane sensor's readings against its predictions are exactly the data to calibrate it
+(`machine-control/machine_control/crease_sensor.py`, protocol appendix, `hardware/README.md` 5b).
+A miss now costs a wicket only if the ball would have hit the stumps (`resolve_no_contact`); otherwise it is
+"beaten". LBW needs pad contact and is not detectable.
+
+**9. Aim the delivery.** `targeting.py` solves the launch angles that land the ball at a chosen line and
+length (bisection on vertical angle for length, secant on horizontal for line). Measured on 120 generated
+deliveries **before** it existed: 35% wides, 8% on target, and the length at the batter was 61% full toss,
+32% yorker, 8% full, **no good-length or short balls** (the launch angle never varied). Measured on 60 aimed
+deliveries **after**: 0% wides, 22% on target (the corridor is deliberately mostly outside off), and a real length
+mix (57% good length, 17% full, 13% yorker, 10% short of a length, 3% short). The adaptive difficulty logic is
+unchanged - difficulty depends only on pace, seam and spin - so a candidate is picked for difficulty, then aimed.
+The length mix and line corridor are choices, not coaching norms. Solve time is about 2 s per delivery.
+
 ## Persisting a player's progress
 
 `PlayerProfile` is a plain dataclass, so saving it between sessions is a

@@ -32,6 +32,9 @@ from .scorecard import (
 from .delivery_report import DeliveryReport, build_delivery_report
 from .shot_analysis import ShotAnalysis, analyse_shot
 from .shot_fusion import FusedShot, fuse_shot
+from .laws import DeliveryLegality, WideRules, assess_delivery
+from .crease_crossing import BounceModel, Crossing, predict_crossing
+from .targeting import aim_delivery, suggest_aimed_delivery
 from .net_outcome import (
     NetOutcome,
     NET_OUTCOMES,
@@ -64,6 +67,14 @@ __all__ = [
     "analyse_shot",
     "FusedShot",
     "fuse_shot",
+    "DeliveryLegality",
+    "WideRules",
+    "assess_delivery",
+    "BounceModel",
+    "Crossing",
+    "predict_crossing",
+    "aim_delivery",
+    "suggest_aimed_delivery",
     "NetOutcome",
     "NET_OUTCOMES",
     "classify_net_outcome",

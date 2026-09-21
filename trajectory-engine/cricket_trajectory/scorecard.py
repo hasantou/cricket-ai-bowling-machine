@@ -177,7 +177,8 @@ class Scorecard:
                      delivery: Delivery,
                      result: SimulationResult,
                      outcome: Optional[str] = None,
-                     scoring_table: Optional[dict] = None) -> BallRecord:
+                     scoring_table: Optional[dict] = None,
+                     legality: object = "auto") -> BallRecord:
         """
         The single call a control loop makes per ball: pass in what was
         bowled, its simulated flight, and (for a fair ball) the reported
@@ -188,8 +189,14 @@ class Scorecard:
         real cricket does allow a batter to still score off an illegal
         delivery, but that's deliberately out of scope for a v1 bridge; a
         wide/no-ball here is always scored as exactly one extra run.
+
+        `legality` defaults to "auto": the single-trajectory proxy in
+        classify_delivery_legality(). Pass the call from laws.assess_delivery()
+        (None for fair, "wide") - or a crease-plane sensor's decision - to score
+        on the bounce-aware, Laws-based judgement instead.
         """
-        legality = classify_delivery_legality(result)
+        if legality == "auto":
+            legality = classify_delivery_legality(result)
         over = self.legal_balls // 6
         rating_before = rating_after = None
 

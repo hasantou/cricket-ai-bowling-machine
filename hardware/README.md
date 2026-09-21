@@ -11,7 +11,7 @@ guessed. Where a real number doesn't exist yet (because it depends on
 which machine gets chosen), that's stated explicitly rather than filled
 in with a plausible-sounding placeholder.
 
-## Overview: six subsystems, six existing interfaces
+## Overview: six subsystems, six existing interfaces (plus an optional crease-plane sensor, below)
 
 | # | Subsystem | Plugs into | Status |
 |---|---|---|---|
@@ -181,6 +181,27 @@ hardware because none exists. Pick one tier:
 Either tier plugs into the exact same `OutcomeObserver.observe()` call
 the orchestrator already uses — nothing above this layer needs to know
 which tier is installed.
+
+## 5b. Crease-plane sensor (wide and head-height calls)
+
+Feeds `machine_control/crease_sensor.py`'s `CreaseSensor` interface. Optional for a first build: without
+it the machine still predicts every call from its physics model and labels it as a prediction. It is what
+turns "the model says this is a wide" into "the ball was measured 0.92 m wide", and its readings are the data
+to check and calibrate the model's bounce (which is uncalibrated).
+
+- **What it measures:** where the ball crosses two vertical planes - the striker's stumps and the popping
+  crease (1.22 m in front of them): lateral position and height, plus a timestamp.
+- **Why a plane and not tracking:** the Laws judge a wide where the ball *passes the striker*
+  (MCC Law 22.2) and the ICC head-height rule at the popping crease (22.1.1.2). That is a one-plane question,
+  far easier than following a small fast ball through the air (which real footage showed to be hard).
+- **Candidate technologies (none chosen, none tested):** a light-curtain / IR-beam grid across the pitch width,
+  a 2-D laser scanner sweeping the plane, or a calibrated stereo pair aimed along it. A grid must span the full
+  3.05 m pitch width (a ball pitching off the pitch is itself a Law 21.7 no-ball) and about 2.2 m of height.
+- **Required accuracy:** about +/-2 cm lateral, +/-3 cm height (rules treat 3 cm from a limit as borderline);
+  time resolution fine enough to separate the two planes (ball speed ~25-40 m/s, planes 1.22 m apart, so ~30-50 ms).
+- **Interface:** one line per reading over its own serial port - see `machine-control/PROTOCOL.md`, appendix.
+- **Commissioning:** roll or throw a ball by hand across each plane at marked positions and compare the reported
+  lateral/height with a tape measure; then compare against the physics model's prediction for machine-bowled balls.
 
 ## 6. Compute unit
 

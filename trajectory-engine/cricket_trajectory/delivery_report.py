@@ -28,6 +28,7 @@ from typing import List, Optional, Tuple
 from . import constants as c
 from .ball import Delivery
 from .scorecard import classify_delivery_legality
+from .laws import DeliveryLegality
 from .simulate import SimulationResult
 
 # --- length: distance from the BATTER's stumps to where the ball pitches ---
@@ -111,6 +112,7 @@ class DeliveryReport:
     flight_time_s: float
     speed_at_pitch_kmh: float
     legality: Optional[str]
+    assessment: Optional[DeliveryLegality] = None   # the bounce-aware, Laws-based call at the batter (laws.py), if computed
 
     @property
     def speed_error_kmh(self) -> Optional[float]:
@@ -139,8 +141,26 @@ class DeliveryReport:
             ("Spin", f"{self.spin_description}" + (f" at {self.spin_rpm:.0f} rpm" if self.spin_rpm >= 50 else "")),
             ("Seam", f"{self.seam_angle_deg:.0f}° to the flight" + (" — reverse swing regime" if self.reverse_swing else "")),
             ("Flight", f"{self.flight_time_s:.2f} s to pitch, {self.speed_at_pitch_kmh:.0f} km/h at pitch"),
-            ("Legality", (self.legality or "fair delivery").replace("_", "-")),
         ]
+        rows += self._legality_rows()
+        return rows
+
+    def _legality_rows(self) -> List[Tuple[str, str]]:
+        a = self.assessment
+        if a is None:
+            return [("Legality", (self.legality or "fair delivery").replace("_", "-"))]
+        if a.is_wide:
+            call = "WIDE — " + "; ".join(a.wide_reasons)
+        else:
+            call = f"fair — {a.wide_margin_m:.2f} m inside the nearest wide limit" + (" (borderline)" if a.borderline else "")
+        if a.at_wicket is None:
+            stumps = "does not reach the stumps in this model"
+        elif a.hits_stumps:
+            stumps = f"yes — on target ({a.stumps.lateral_margin_m * 100:.0f} cm inside the stumps' width)"
+        else:
+            stumps = f"no — misses by {abs(min(a.stumps.lateral_margin_m, a.stumps.height_margin_m)) * 100:.0f} cm"
+        rows = [("Legality (at the batter)", call), ("Would hit the stumps", stumps)]
+        rows.append(("No-ball conditions (counted, not scored)", "; ".join(a.no_ball_flags) if a.no_ball_flags else "none"))
         return rows
 
 
@@ -148,6 +168,7 @@ def build_delivery_report(
     delivery: Delivery,
     result: SimulationResult,
     measured_release_speed_mps: Optional[float] = None,
+    assessment: Optional[DeliveryLegality] = None,
 ) -> DeliveryReport:
     pitch_x, pitch_y = result.landing_point_m
     from_stumps, length_label = classify_length(pitch_x)
@@ -171,5 +192,6 @@ def build_delivery_report(
         swing_label=swing_label,
         flight_time_s=result.flight_time_s,
         speed_at_pitch_kmh=c.ms_to_kmh(float(result.trajectory["speed"].iloc[-1])),
-        legality=classify_delivery_legality(result),
+        legality=(assessment.call if assessment is not None else classify_delivery_legality(result)),
+        assessment=assessment,
     )

@@ -51,7 +51,12 @@ from cricket_trajectory import (
     Scorecard, classify_delivery_legality, run_simulation, score_outcome, build_delivery_report,
     analyse_shot,
 )
-from cricket_trajectory.adaptive import suggest_next_delivery, delivery_difficulty_rating
+from cricket_trajectory.adaptive import delivery_difficulty_rating
+from cricket_trajectory import suggest_aimed_delivery, assess_delivery
+from cricket_trajectory.laws import resolve_no_contact
+from machine_control.crease_sensor import (
+    LegalityObserver, SimulatedCreaseSensor, NoCrossingDetected, WICKET as _WICKET, POPPING as _POPPING,
+)
 from cricket_trajectory.machine import WheelMachine
 from machine_control.session_store import save_profile, load_profile, save_scorecard, load_scorecard
 from machine_control.controller import SimulatedMachineController
@@ -356,6 +361,17 @@ def _analyse_clip_live(video_bytes: bytes, suffix: str):
         return estimates, frame_count, person_frame_count, elapsed, fps, footage
     finally:
         os.unlink(tmp_path)
+
+
+def suggest_next_delivery(profile, ball, challenge_margin=60.0):
+    """The one place the app asks for the next ball. It is the adaptive engine's difficulty choice
+    (unchanged), AIMED at a sampled line and length by a physics solve and, unless switched off,
+    verified not to be a wide (trajectory-engine/targeting.py + laws.py). Before this, every ball left
+    the machine at the same angle: measured 35% wides and no good-length balls."""
+    return suggest_aimed_delivery(
+        profile, ball, st.session_state.get("traj_env"), challenge_margin=challenge_margin,
+        legal_only=st.session_state.get("traj_legal_only", True),
+    )
 
 
 def _show_body_vectors(report, image_bytes, shot_estimate=None):
@@ -666,6 +682,12 @@ with st.sidebar:
             "harder deliveries picked; higher = easier ones — it's a target the engine "
             "aims at, not a guarantee for any single ball, so expect it to land a few "
             "points either side."
+        )
+        st.session_state.traj_legal_only = st.checkbox(
+            "Only bowl legal deliveries (no wides)", value=st.session_state.get("traj_legal_only", True),
+            help="Each delivery is aimed at a chosen line and length, then checked against the wide rule "
+                 "(MCC Law 22 / ICC 22.1.1.2, trajectory-engine/laws.py). Untick to let the machine bowl "
+                 "whatever it is given, wides included.",
         )
         new_target = target_pct / 100.0
         if abs(new_target - st.session_state.traj_target_success) > 1e-9:
@@ -995,7 +1017,14 @@ else:
     # Simulate the flight up front — legality (wide/no-ball) is judged from
     # this trajectory alone, before any outcome is even asked for.
     sim_result = run_simulation(ball, env, next_ball)
-    legality = classify_delivery_legality(sim_result)
+    # The Laws-based, bounce-aware call at the batter (a wide is where the ball PASSES the striker, not
+    # where it pitched). No-ball conditions are counted for information only - a machine has no front foot.
+    assessment = assess_delivery(ball, env, next_ball)
+    legality = "wide" if assessment.is_wide else None
+    if "traj_legality_observer" not in st.session_state:
+        st.session_state.traj_legality_observer = LegalityObserver()
+    if "traj_noball_count" not in st.session_state:
+        st.session_state.traj_noball_count = 0
 
     with left:
         st.subheader("Next delivery to bowl")
@@ -1012,7 +1041,9 @@ else:
             st.session_state.get("traj_last_release_speed")
             if st.session_state.traj_delivery_sent else None
         )
-        delivery_report = build_delivery_report(next_ball, sim_result, measured_release_speed_mps=sent_speed)
+        delivery_report = build_delivery_report(
+            next_ball, sim_result, measured_release_speed_mps=sent_speed, assessment=assessment,
+        )
         with st.expander("How this ball is bowled — delivery report", expanded=True):
             report_table = "| Detail | Value |\n|---|---|\n" + "\n".join(
                 f"| **{label}** | {value} |" for label, value in delivery_report.rows()
@@ -1130,14 +1161,35 @@ else:
                 st.session_state.traj_delivery_sent = False
                 st.rerun()
 
+            crease = SimulatedCreaseSensor(seed=len(card.balls) if hasattr(card, "balls") else None)
+            crease.arm(_WICKET, assessment.at_wicket)
+            crease.arm(_POPPING, assessment.at_popping_crease)
+            try:
+                wicket_reading = crease.measure_crossing(_WICKET)
+                popping_reading = crease.measure_crossing(_POPPING)
+            except NoCrossingDetected:
+                wicket_reading = popping_reading = None
+            decision = st.session_state.traj_legality_observer.decide(assessment, wicket_reading, popping_reading)
+            if wicket_reading is not None:
+                st.caption(
+                    f"Crease-plane sensor (simulated): the ball crossed the wicket {wicket_reading.y_m:+.2f} m from the "
+                    f"stump line at {wicket_reading.z_m:.2f} m height → sensor call: "
+                    f"**{'WIDE' if decision.call else 'fair'}**"
+                    + ("" if decision.agrees_with_model else " (differs from the model's prediction)")
+                    + ". A real sensor's readings would also calibrate the physics model's bounce."
+                )
+            if decision.no_ball_flags:
+                st.caption("No-ball conditions (counted, not scored — a machine has no front foot): "
+                           + "; ".join(decision.no_ball_flags))
+            legality = decision.call
             if legality is not None:
                 st.warning(
-                    f"Simulated flight rules this a **{legality.upper()}** — computed directly "
-                    "from the trajectory (line/height at the batting crease), no umpire input "
-                    "needed for this part. Scores as +1 extra; the machine re-bowls."
+                    "Ruled a **WIDE** — " + "; ".join(decision.wide_reasons or assessment.wide_reasons)
+                    + ". Scores as +1 extra; the machine re-bowls. (Judged where the ball passes the striker, "
+                    "MCC Law 22; the reach limits are proxies for the umpire's judgement.)"
                 )
                 if st.button("Confirm — re-bowl", type="primary"):
-                    card.record_ball(profile, ball, next_ball, sim_result)
+                    card.record_ball(profile, ball, next_ball, sim_result, legality="wide")
                     st.session_state.traj_next_delivery = suggest_next_delivery(
                         profile, ball,
                         challenge_margin=_margin_for_target(st.session_state.traj_target_success),
@@ -1156,7 +1208,7 @@ else:
                         horizontal=True, index=0,
                     )
                     if st.button("Log delivery", type="primary"):
-                        card.record_ball(profile, ball, next_ball, sim_result, outcome=outcome)
+                        card.record_ball(profile, ball, next_ball, sim_result, outcome=outcome, legality=None)
                         st.session_state.traj_next_delivery = suggest_next_delivery(
                             profile, ball,
                             challenge_margin=_margin_for_target(st.session_state.traj_target_success),
@@ -1182,6 +1234,9 @@ else:
                             sensor.arm(reading)
                             observer = VelocitySensorOutcomeObserver(sensor)
                             resolved_outcome = observer.observe(next_ball, ball)
+                            beaten_note = None
+                            if reading is None and resolved_outcome == "missed":
+                                resolved_outcome, beaten_note = resolve_no_contact(assessment.hits_stumps)
                             if reading is not None:
                                 outcome_obj, exit_velocity = classify_exit_velocity(*reading)
                                 label = outcome_obj.label
@@ -1190,6 +1245,7 @@ else:
                                 label = NET_OUTCOMES["no_contact"].label
                             st.session_state.traj_sensor_reading = {
                                 "exit_velocity": exit_velocity, "label": label, "outcome": resolved_outcome,
+                                "note": beaten_note,
                             }
                             st.rerun()
                     else:
@@ -1201,7 +1257,10 @@ else:
                             else f"{scoring.runs} run{'s' if scoring.runs != 1 else ''}"
                         )
                         if ev is None:
-                            st.warning(f"Sensor reading: no contact detected. → **{scoring_text}**")
+                            st.warning(
+                                f"Sensor reading: no contact detected. → **{scoring_text}**"
+                                + (f" — {r['note']}" if r.get("note") else "")
+                            )
                         else:
                             st.info(
                                 f"Sensor reading: **{ev.speed_mps:.1f} m/s** ({ev.speed_mps*3.6:.0f} km/h), "
@@ -1231,7 +1290,7 @@ else:
                                 "(`shot_vocabulary.py`); a plain reference list, not a coaching standard."
                             )
                         if st.button("Log delivery", type="primary"):
-                            card.record_ball(profile, ball, next_ball, sim_result, outcome=r["outcome"])
+                            card.record_ball(profile, ball, next_ball, sim_result, outcome=r["outcome"], legality=None)
                             st.session_state.traj_next_delivery = suggest_next_delivery(
                                 profile, ball,
                                 challenge_margin=_margin_for_target(st.session_state.traj_target_success),
@@ -1355,6 +1414,14 @@ with st.expander("What's real here vs. what's a placeholder"):
         "inference from a rule table — not a measurement, not a coach's verdict, right-handed "
         "batter only — and the sensor reading here is simulated. Front/back foot is inferred "
         "from the ball's length unless observed. Not yet checked against real shots.\n"
+        "- **Wides, and the rules of cricket (physics engine)**: each delivery is judged where the ball "
+        "would PASS the batter, carried through a bounce model, against the MCC Law 22 wide test and the ICC "
+        "head-height rule (`trajectory-engine/laws.py`, sourced from the published Laws). The Law leaves a wide "
+        "to the umpire's sense of reach, so the app uses stated proxy limits; the bounce model is uncalibrated; "
+        "no-balls are counted, not scored (a machine has no front foot). A miss is a wicket only if the ball "
+        "would have hit the stumps (Law 32). Deliveries are now aimed at a chosen line and length "
+        "(`targeting.py`); before that the machine bowled 35% wides and no good-length balls. The crease-plane "
+        "sensor shown here is simulated.\n"
         "- **Placeholder for this MVP, by design**: shot outcome (middled/edged/missed/...) "
         "is always entered by a human in the style-library engine — ball tracking against "
         "the bat isn't built.\n"

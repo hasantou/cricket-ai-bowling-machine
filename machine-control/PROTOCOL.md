@@ -75,6 +75,33 @@ host:     RESET
 firmware: OK
 ```
 
+## Appendix: crease-plane sensor (a separate device)
+
+The wide / head-height sensor is its own board on its own serial port, not part of the
+machine's command channel above. Same conventions: 8N1, plain ASCII, one line per message,
+host speaks first. `machine_control/crease_sensor.py` (`parse_crease_line`) is the reference parser.
+
+| Host sends | Sensor answers | Meaning |
+|---|---|---|
+| `CREASE? <plane>` | `CREASE <plane> <t_us> <y_mm> <z_mm>` | The last delivery's crossing of `<plane>` |
+| `CREASE? <plane>` | `NONE` | Nothing has crossed that plane |
+| any | `ERR <reason>` | Rejected; free text for logs |
+
+- `<plane>` is `wicket` (the striker's stumps, where a wide is judged - MCC Law 22.2) or
+  `popping` (the popping crease, 1.22 m in front of the stumps, where head height is judged -
+  ICC 22.1.1.2).
+- `<t_us>` is integer microseconds on the sensor's own clock; `<y_mm>` is the ball's lateral
+  position, signed, **positive toward the off side of a right-handed batter**, measured from the
+  line through the middle stump; `<z_mm>` is its height above the playing surface. Integers only.
+- The host rejects any line that is malformed, has the wrong number of fields, or is outside a
+  physical range (|y| > 6 m, z outside -5 cm..6 m). It never guesses at a garbled line.
+- Required accuracy: about **+/-2 cm lateral and +/-3 cm height**, because the rules treat a
+  reading within 3 cm of a limit as borderline (`laws.WideRules.tolerance_m`).
+- Time alignment with the camera and the other sensors is done in software
+  (`trajectory-engine/cricket_trajectory/delivery_sync.py`); the sensor needs only a monotonic clock.
+
+Never run against real hardware: there is no board yet.
+
 ## What this protocol deliberately does not cover
 
 - **Calibration.** `RPM → actual ball speed/spin` is currently a purely
