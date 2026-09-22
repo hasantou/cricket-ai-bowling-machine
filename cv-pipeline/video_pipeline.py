@@ -177,6 +177,34 @@ def crop_to_roi(frame, roi):
     return crop
 
 
+def clamp_roi(roi):
+    """Keep a normalised (x0, y0, x1, y1) region inside [0, 1] and non-degenerate. A moving region
+    (tracking a camera pan) can drift with BOTH bounds past an edge, or invert, if the pan carries
+    it well off-frame; each axis is clamped by its midpoint, not by flooring/ceilinging a presorted
+    pair, so a region that has left the frame entirely collapses to a thin sliver at the near edge
+    instead of an inverted, zero-area box (which crashes the resize that follows). This is applied
+    identically before cropping AND before mapping landmarks back, so the two always agree on what
+    region was actually used."""
+    def axis(a, b):
+        lo, hi = max(0.0, min(min(a, b), 1.0)), max(0.0, min(max(a, b), 1.0))
+        if hi - lo < 0.02:
+            mid = min(max((lo + hi) / 2.0, 0.01), 0.99)
+            return mid - 0.01, mid + 0.01
+        return lo, hi
+
+    x0, x1 = axis(roi[0], roi[2])
+    y0, y1 = axis(roi[1], roi[3])
+    return (x0, y0, x1, y1)
+
+
+def advance_roi(roi, running_dx, running_dy):
+    """The region shifted by the camera's cumulative causal displacement so far, clamped to the
+    frame. Pulled out as its own function so the pan-following logic is testable without driving
+    the whole pipeline through pose estimation and delivery detection."""
+    x0, y0, x1, y1 = roi
+    return clamp_roi((x0 + running_dx, y0 + running_dy, x1 + running_dx, y1 + running_dy))
+
+
 def map_roi_landmarks(lm, roi):
     """Landmarks normalised to the crop -> normalised to the whole frame."""
     if lm is None:
@@ -245,23 +273,37 @@ def analyse_video(
         width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         thumbs = []
         shifts = []
+        rois_used = []
         tracker = CameraMotionTracker()
 
         def stream():
+            running = [0.0, 0.0]                 # cumulative camera displacement seen so far (causal)
             while True:
                 ok, frame = cap.read()
                 if not ok:
                     return
                 thumbs.append(thumbnail(frame))
-                shifts.append(tracker.push(frame))
-                yield crop_to_roi(frame, roi) if roi else _shrink(frame)
+                shift = tracker.push(frame)
+                shifts.append(shift)
+                if roi:
+                    if shift is not None:
+                        running[0] += shift[0]
+                        running[1] += shift[1]
+                    # A region tracking the CAMERA's own pan, not the batter's own movement: it follows
+                    # a panning shot (found not to on a real broadcast clip - see cv-pipeline/README.md)
+                    # but a batter who moves independently (steps out, runs) still drifts out of it.
+                    moved = advance_roi(roi, running[0], running[1])
+                    rois_used.append(moved)
+                    yield crop_to_roi(frame, moved)
+                else:
+                    yield _shrink(frame)
 
         try:
             aligned = estimator.extract_aligned_landmarks_from_frames(stream(), fps)
         finally:
             cap.release()
         if roi:
-            aligned = [map_roi_landmarks(lm, roi) for lm in aligned]
+            aligned = [map_roi_landmarks(lm, rois_used[i]) for i, lm in enumerate(aligned)]
         n_frames = len(aligned)
         frame_of = [i for i, lm in enumerate(aligned) if lm is not None]   # landmark index -> real frame index
         if not frame_of:
@@ -281,9 +323,12 @@ def analyse_video(
         eff_fps = effective_fps(fps, changes)
         clip_notes: List[str] = []
         if roi:
+            drift = max(abs(rois_used[-1][0] - roi[0]), abs(rois_used[-1][1] - roi[1])) if rois_used else 0.0
             clip_notes.append(
-                f"The batter was located by a region you set ({roi[0]:.2f},{roi[1]:.2f})-({roi[2]:.2f},{roi[3]:.2f}) and "
-                "that region was upscaled before pose estimation; a fixed region does not follow a panning camera."
+                f"The batter was located by a region you set ({roi[0]:.2f},{roi[1]:.2f})-({roi[2]:.2f},{roi[3]:.2f}), "
+                "upscaled before pose estimation, and moved to track the camera's own panning as it was measured"
+                + (f" (drifted {drift:.2f} by the end of the clip)" if drift > 0.02 else "")
+                + ". It does NOT follow the batter's own movement (stepping out, running) independent of the camera."
             )
         if eff_fps < 0.8 * fps:
             clip_notes.append(

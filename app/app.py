@@ -868,7 +868,9 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                 ["Automatic (the most prominent person)", "Far end of the pitch (top-centre)", "Left half", "Right half", "Custom box"],
                 help="The pose model follows one person. 'Automatic' picks whoever is most prominent — on footage from the "
                      "bowler's end that is usually the BOWLER, and every batter reading would then describe the wrong person. "
-                     "Pointing at the batter also lets the model see a small batter at higher magnification.",
+                     "Pointing at the batter also lets the model see a small batter at higher magnification. On a panning "
+                     "shot the box now moves with the camera's own measured pan — it still won't follow the batter's own "
+                     "run or step, only the camera's motion.",
             )
             _presets = {
                 "Far end of the pitch (top-centre)": (0.30, 0.10, 0.85, 0.60), "Left half": (0.0, 0.0, 0.5, 1.0),

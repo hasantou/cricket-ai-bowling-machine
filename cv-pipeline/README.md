@@ -304,18 +304,28 @@ the whole system. What they exposed, and what was built for it:
   not seen. Front-on/behind, depth is foreshortened, so those thresholds are lower and the result
   says so. Rules of thumb, not fitted to labelled footwork.
 
-## A fixed batter region does not survive a camera pan (found on the same clip)
+## A fixed batter region doesn't survive a camera pan — now follows the camera instead
 
-The batter-region fix below works for a static camera (the arena clip). On a broadcast shot that
-**pans** - bowler runs in, camera whips up and across to follow the ball - a region drawn where
-the batter stood at the start is nowhere near them by the end, and `clip_notes` says so explicitly
-("a fixed region does not follow a panning camera"). Trying it made the problem worse, not better,
-on this clip. On the same footage, without any region set, the single-person tracker also grabbed
-the **bowler's own arm movement during his run-up** (a clapping motion) and reported it as a
-batter's swing at up to 22 torso-lengths/s - there is nothing in the current pipeline that confirms
-WHICH tracked person is the batter versus anyone else prominent in frame. Following a moving region
-across a pan, or identifying the batter by cricket-specific role rather than prominence, is not
-solved here.
+A region drawn on the batter at the start of a clip is nowhere near them by the end of a broadcast
+whip-pan (bowler runs in, camera whips up and across to follow the ball). The region now tracks the
+camera's own measured pan (`advance_roi`, reusing `camera_motion.py`'s per-frame displacement — the
+same numbers that already stabilise landmarks), instead of staying fixed. Verified on the real ICC
+clip: both hands confidently seen went from 13% (automatic, no region) to 28-32% (a fixed region) to
+**47%** (a region that follows the pan), and the swing readings it found (9.3, 8.2 torso-lengths/s)
+are plausible, unlike the fixed region's earlier confusion with the bowler's own arm movement.
+Fixing this exposed a real crash: a fast enough pan carries the region's edges past 1.0 or below 0.0
+on BOTH bounds, which the first clamp only floored/ceilinged from a presorted pair, producing an
+inverted, zero-area box that crashed the resize downstream — `clamp_roi` now clamps each axis's
+matched bounds together, tested against that exact case as a regression.
+
+**What this does not solve.** The region only follows the CAMERA, not the batter's own independent
+movement — a batter who steps out or runs still drifts out of it, which is why detection rate on
+the real clip actually fell (26%, down from 56% with a static region) even as hand visibility rose:
+once the batter's own motion diverges from the camera's, the region is looking at grass. Separately,
+without any region set, the single-person tracker on this same footage grabbed the **bowler's own
+arm movement during his run-up** (a clapping motion) and reported it as a batter's swing at up to 22
+torso-lengths/s — nothing in the pipeline confirms WHICH tracked person is the batter versus anyone
+else prominent in frame. That identification problem is not solved here.
 
 ## Which person is the batter? (found on a Test-match broadcast clip)
 
