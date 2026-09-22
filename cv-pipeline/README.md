@@ -295,11 +295,27 @@ the whole system. What they exposed, and what was built for it:
 - **The bowler's action worked on real footage for the first time**: on a Test-match broadcast
   clip it found the release frame with the arm vertical (checked by eye). On the other clips the
   arm-speed figures were impossible (60-120 body-lengths/s) because of camera motion and 25-30
-  real fps, so those figures are unreliable until re-measured with camera compensation.
+  real fps. **Re-measured with camera compensation on a real ICC T20 World Cup Qualifier
+  broadcast clip (Finland v Germany): arm speed came back at 16.8 torso-lengths/s** - plausible,
+  down from the impossible 60-120 range - confirming the compensation is doing real work, not
+  just a synthetic-test pass.
 - **`footwork.py`**: front foot, stride toward the bowler, back-foot shift, weight transfer and
   lead time, in torso-lengths, relative to the batter's own stance; "unclear" when the ankles are
   not seen. Front-on/behind, depth is foreshortened, so those thresholds are lower and the result
   says so. Rules of thumb, not fitted to labelled footwork.
+
+## A fixed batter region does not survive a camera pan (found on the same clip)
+
+The batter-region fix below works for a static camera (the arena clip). On a broadcast shot that
+**pans** - bowler runs in, camera whips up and across to follow the ball - a region drawn where
+the batter stood at the start is nowhere near them by the end, and `clip_notes` says so explicitly
+("a fixed region does not follow a panning camera"). Trying it made the problem worse, not better,
+on this clip. On the same footage, without any region set, the single-person tracker also grabbed
+the **bowler's own arm movement during his run-up** (a clapping motion) and reported it as a
+batter's swing at up to 22 torso-lengths/s - there is nothing in the current pipeline that confirms
+WHICH tracked person is the batter versus anyone else prominent in frame. Following a moving region
+across a pan, or identifying the batter by cricket-specific role rather than prominence, is not
+solved here.
 
 ## Which person is the batter? (found on a Test-match broadcast clip)
 

@@ -14,11 +14,29 @@ The bounce is a deliberately simple model:
     grip and friction take some pace off the ball);
   * spin's effect on the bounce is ignored (it keeps acting in flight through
     the existing aerodynamics).
-Both numbers are plausible orders of magnitude for a cricket ball on a hard
-pitch, NOT measured for this machine, this ball or this surface. They are
-named, adjustable, and — once a crease-plane sensor exists — checkable: the
-sensor's readings against this model's predictions are exactly the data to
-calibrate them with (see machine-control/crease_sensor.py).
+
+The defaults are grounded in published measurement, not a guess, but they are
+still NOT measured for this machine, this ball or this surface — read the gap
+below before trusting them anywhere near a Law 22 boundary call.
+  * `normal_restitution = 0.58` is Rod Cross's measured coefficient of
+    restitution for a cricket ball dropped onto a rigid surface (a ball
+    dropped from 2.0 m rebounds to 0.56-0.76 m; ratio of rebound to impact
+    speed ~0.58) — "The Physics of Cricket",
+    https://physics.usyd.edu.au/~cross/cricket.html (a university physics
+    page, not a peer-reviewed paper; read directly, not from memory).
+  * `tangential_retention = 0.63` is chosen so the TOTAL speed lost pitching
+    (both components combined, at the shallow angles a fast delivery pitches
+    at) falls in the middle of the 30-40% range that source reports for a
+    ball pitching on a real pitch — matched by calculation here, not itself a
+    number the source states directly, since it does not give a separate
+    tangential figure.
+  * THE GAP: both numbers come from a rigid/hard-surface drop test, not a
+    grass pitch's compliance, nor this project's ball, nor spin's effect on
+    grip (which the source says measurably changes the bounce angle and which
+    this model ignores). Once a crease-plane sensor exists
+    (machine-control/crease_sensor.py), its readings against this model's
+    predictions are the real calibration data — the source above narrows the
+    starting guess, it does not replace that measurement.
 """
 
 from __future__ import annotations
@@ -37,8 +55,8 @@ from .simulate import run_simulation
 
 @dataclass(frozen=True)
 class BounceModel:
-    normal_restitution: float = 0.55       # share of vertical speed kept, reversed
-    tangential_retention: float = 0.75     # share of horizontal speed kept
+    normal_restitution: float = 0.58       # share of vertical speed kept, reversed (Cross's measured COR)
+    tangential_retention: float = 0.63     # share of horizontal speed kept (fitted to Cross's reported total speed loss)
     max_bounces: int = 2                   # a very short ball can bounce twice before the crease
 
 

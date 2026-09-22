@@ -84,7 +84,7 @@ to target. That's a decision, not an engineering task — see `ROADMAP.md`.
 
 ## Status
 
-421 automated tests passing across all four Python packages
+423 automated tests passing across all four Python packages
 (`adaptation-engine/`, `cv-pipeline/`, `trajectory-engine/`, `machine-control/`).
 What that number covers, and what it doesn't:
 

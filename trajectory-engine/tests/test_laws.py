@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from cricket_trajectory import BallProperties, Delivery, Environment
+from cricket_trajectory import BallProperties, Delivery, Environment, run_simulation
 from cricket_trajectory import constants as c
 from cricket_trajectory.crease_crossing import Crossing
 from cricket_trajectory.laws import (
@@ -161,3 +161,28 @@ def test_the_two_no_contact_outcomes_score_as_a_wicket_and_a_dot_ball_respective
     from cricket_trajectory.scorecard import score_outcome
     assert score_outcome("missed").is_wicket and score_outcome("missed").dismissal == "bowled"
     assert not score_outcome("beaten").is_wicket and score_outcome("beaten").runs == 0
+
+
+def test_bounce_model_defaults_are_the_cited_published_values_not_a_bare_guess():
+    """Regression: normal_restitution is Rod Cross's measured cricket-ball COR (~0.58); tangential_retention
+    is fitted so total speed loss pitching falls in his reported 30-40% range. If these move, the docstring's
+    citation and the number must move together — don't silently drift back to an arbitrary guess."""
+    from cricket_trajectory.crease_crossing import BounceModel
+    defaults = BounceModel()
+    assert defaults.normal_restitution == pytest.approx(0.58, abs=1e-9)
+    assert defaults.tangential_retention == pytest.approx(0.63, abs=1e-9)
+
+
+def test_total_speed_lost_pitching_falls_in_the_published_30_to_40_percent_range():
+    import math
+    from cricket_trajectory.crease_crossing import BounceModel
+    for kmh in (85.0, 110.0, 140.0):
+        d = Delivery(speed_mps=kmh / 3.6, vertical_launch_deg=-3.0)
+        result = run_simulation(BallProperties(), Environment(), d)
+        vx, vy, vz = (result.trajectory[c].iloc[-1] for c in ("vx", "vy", "vz"))
+        v_in = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
+        rules = BounceModel()
+        v_out = math.sqrt((vx * rules.tangential_retention) ** 2 + (vy * rules.tangential_retention) ** 2
+                          + (vz * rules.normal_restitution) ** 2)
+        loss_pct = (1 - v_out / v_in) * 100
+        assert 28.0 <= loss_pct <= 42.0, f"{kmh} km/h lost {loss_pct:.0f}% (want ~30-40%)"

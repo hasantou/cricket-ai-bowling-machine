@@ -209,9 +209,13 @@ whether the ball would hit the stumps (Law 32.1; stumps 9 in x 28 in), and infor
 counted, not scored**: a machine has no front foot.
 
 It rests on `crease_crossing.py`, which carries the ball through its bounce to the batter (the older
-simulation stopped at the first ground contact, so "where it passes the batter" was a proxy). The bounce is a
-simple model (vertical restitution 0.55, horizontal retention 0.75) that is **uncalibrated** - a real
-crease-plane sensor's readings against its predictions are exactly the data to calibrate it
+simulation stopped at the first ground contact, so "where it passes the batter" was a proxy). The bounce
+model's two constants are grounded in Rod Cross's published cricket-ball bounce measurements ("The Physics of
+Cricket", University of Sydney): normal restitution 0.58 is his measured value for a ball dropped onto a rigid
+surface, and tangential retention 0.63 is fitted so total speed lost pitching lands in the 30-40% range he
+reports. That source used a hard/rigid surface, not turf, so this is still **not calibrated to a real grass
+pitch, this ball, or spin's effect on grip** - a real crease-plane sensor's readings against the model's
+predictions are the calibration data that would close that gap
 (`machine-control/machine_control/crease_sensor.py`, protocol appendix, `hardware/README.md` 5b).
 A miss now costs a wicket only if the ball would have hit the stumps (`resolve_no_contact`); otherwise it is
 "beaten". LBW needs pad contact and is not detectable.
