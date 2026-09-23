@@ -27,6 +27,8 @@ import cv2
 
 from body_vector_render import draw_body_vectors, to_jpeg
 from camera_motion import CameraMotionTracker, build_path, stabilize, stabilize_pose
+from post_shot import POST_SHOT_WINDOW_SECONDS, PostShotReport, analyse_post_shot_movement
+from outcome_from_video import OutcomeEstimate, estimate_net_outcome
 from cut_detection import effective_fps, find_cuts_from_changes, frame_changes, thumbnail, duplicate_fraction
 from body_vectors import BodyVectorReport, analyse_body_vectors
 
@@ -126,6 +128,9 @@ class VideoAnalysis:
     camera_moved: bool = False                                                       # positions were corrected for camera motion
     body_windows: List[Optional[list]] = field(default_factory=list)                 # per delivery: camera-stabilised landmarks, index-aligned with body_vectors
     aspect: float = 1.0                                                              # frame width / height
+    post_shot: List[Optional[PostShotReport]] = field(default_factory=list)          # aligned with `estimates`; see post_shot.py
+    outcome_estimates: List[OutcomeEstimate] = field(default_factory=list)           # aligned with `estimates`; see outcome_from_video.py
+    swing_frames: List[Optional[int]] = field(default_factory=list)                  # aligned with `estimates`; absolute frame index of the swing peak, or None
 
 
 def _typical_hip(window_landmarks):
@@ -403,6 +408,20 @@ def analyse_video(
             body_windows.append(aligned[lo:hi] if report is not None else None)
             peak_frames.append(None if report is None or aligned[lo + report.peak_frame] is None else lo + report.peak_frame)
 
+        # How far this delivery's post-shot lookahead may run before it would cross into an edit
+        # cut or the next detected delivery — never conflate two balls' aftermaths.
+        post_shot: List[Optional[PostShotReport]] = []
+        for k, pf in enumerate(peak_frames):
+            if pf is None:
+                post_shot.append(None)
+                continue
+            candidates = [n_frames] + [c for c in cut_events if c > pf]
+            if k + 1 < len(windows):
+                candidates.append(_swing_frame(windows[k + 1][0], frame_of, fps))
+            post_shot.append(analyse_post_shot_movement(aligned[:min(candidates)], fps, aspect, shot_frame=pf))
+
+        outcome_estimates = [estimate_net_outcome(bv, ps) for bv, ps in zip(body_vectors, post_shot)]
+
         vector_images: List[Optional[bytes]] = [None] * len(windows)
         wanted_peaks = {pf for pf in peak_frames if pf is not None}
         for i, frame in _iter_wanted_frames(video_path, wanted_peaks):
@@ -419,7 +438,8 @@ def analyse_video(
             body_vectors=body_vectors, vector_images=vector_images,
             container_fps=fps, effective_fps=eff_fps, cut_events=cut_events,
             clip_notes=clip_notes, delivery_notes=delivery_notes, camera_moved=path.moving,
-            body_windows=body_windows, aspect=aspect,
+            body_windows=body_windows, aspect=aspect, post_shot=post_shot, outcome_estimates=outcome_estimates,
+            swing_frames=peak_frames,
         )
     finally:
         if owns_estimator:

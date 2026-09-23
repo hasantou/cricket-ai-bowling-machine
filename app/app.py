@@ -901,6 +901,7 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
             vector_images = None
             clip_notes = None
             delivery_notes = None
+            outcome_estimates = None
             footage = None
             if clip is not None:
                 suffix = os.path.splitext(clip.name)[1]
@@ -916,6 +917,7 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                         vector_images = analysis.vector_images
                         clip_notes = analysis.clip_notes
                         delivery_notes = analysis.delivery_notes
+                        outcome_estimates = analysis.outcome_estimates
                     else:
                         vision_estimates, n_frames, n_person_frames, elapsed, live_fps, footage = _analyse_clip_live(
                             clip.getvalue(), suffix
@@ -969,6 +971,16 @@ if st.session_state.engine_family == ENGINE_FAMILIES[0]:
                         key=f"video_outcome_{i}", label_visibility="collapsed",
                     )
                     row_outcomes.append(row_outcome)
+                    if outcome_estimates:
+                        oe = outcome_estimates[i]
+                        _alert = {
+                            "six-type shot": st.success, "four-type shot": st.success,
+                            "wicket-type delivery": st.error, "dot ball": st.info, "cannot estimate": st.warning,
+                        }[oe.outcome]
+                        _alert(f"**Net outcome (estimate): {oe.outcome}.** {oe.reasoning}")
+                        with st.expander(f"Delivery {i + 1} — why, and how much to trust this"):
+                            for c in oe.caveats:
+                                st.caption(c)
                     for note in (delivery_notes[i] if delivery_notes else []):
                         st.caption(f"Delivery {i + 1}: {note}")
                     if report is not None:
@@ -1478,6 +1490,28 @@ with st.expander("What's real here vs. what's a placeholder"):
         "labelled shots; it reads the hands, not the ball; and it refuses ('cannot tell') on poor "
         "tracking. On the one real clip available it refuses every delivery, so it has never named "
         "a shot on real footage. A \"Real-world trial\" panel records what each shot really was, scores the algorithm against it and, with 30+ trusted labelled deliveries, tunes its thresholds on held-out data (see docs/real_world_test_protocol.md).\n"
+        "- **Net outcome from video (six/four/dot/wicket estimate)**: for a net session with no "
+        "boundary rope or fielders, each detected delivery gets an ESTIMATE of the outcome from the "
+        "batter's swing speed and how lofted it was (`cv-pipeline/outcome_from_video.py`). Read this "
+        "one carefully: **it cannot see the ball or confirm bat-ball contact happened at all** — a "
+        "hard swing that missed completely looks the same to it as one that connected — so it is a "
+        "coaching prompt to check the clip, not a scorecard entry. Thresholds are illustrative round "
+        "numbers from a handful of real swings, not fitted to labelled outcomes. It also reads what "
+        "the batter did in the ~2 seconds after the shot (ran / stayed / lost track — "
+        "`post_shot.py`) as a weak secondary signal only; a tracking dropout there is never treated "
+        "as evidence of a dismissal, since it could just as easily be the camera cutting away.\n"
+        "- **Real ground truth from commentary (`cv-pipeline/commentary_labels.py` + "
+        "`commentary_evaluation.py`)**: a commentator saying \"SIX!\" or \"bowled!\" is a real human "
+        "judgement already on the clip's own audio — transcribed locally (Whisper), matched to the "
+        "nearest delivery, and compared against the six/four/dot/wicket estimate above for a real "
+        "accuracy number. Whisper can mishear or miss a call, so a human should still spot-check the "
+        "matched text before trusting a run of these as calibration data.\n"
+        "- **Ball colour detection was tried and honestly did not work**: `cv-pipeline/"
+        "color_ball_detector.py`, tested against a real frame with the ball's position confirmed by "
+        "eye, found the ball's colour merges with the batter's hand and the bat's grip at close "
+        "range — no clean candidate at the true position, even after tightening on saturation. It "
+        "works correctly on a plain, isolated case (see its tests); real footage's proximity is the "
+        "gap, not the matching logic.\n"
         "- **Shot naming (physics engine)**: after a sensor reading, the app names the shot "
         "(cover drive, pull, forward defence, ...) from the ball's exit direction, height and "
         "pace plus the delivery's length (`trajectory-engine/shot_analysis.py`). It is an "

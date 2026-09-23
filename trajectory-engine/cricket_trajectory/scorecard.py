@@ -124,6 +124,62 @@ DEFAULT_SCORING = {
 }
 
 
+#: The style-library engine's own judgement vocabulary (OUTCOME_QUALITY in
+#: adaptation-engine/scoring.py: middled/attacked/defended/edged/missed) has no
+#: wicket concept at all -- it exists purely to drive the mastery scorer.
+#: This is the runs half of turning that same judgement into an actual
+#: scorecard entry (see style_delivery_scoring() below for why the wicket
+#: half is a separate, explicit input rather than inferred from this).
+RUNS_FOR_OUTCOME_QUALITY = {
+    "missed": 0,
+    "defended": 0,
+    "edged": 0,
+    "attacked": 1,
+    "middled": 4,
+}
+
+NOT_OUT = "not out"
+#: Every dismissal a coach watching (live or on video) can call unambiguously
+#: without any ball-tracking or AI -- deliberately just the visible modes;
+#: obstructing the field / timed out / retired are match-administration
+#: calls, not something "log a delivery" needs to offer.
+DISMISSAL_TYPES = (NOT_OUT, "bowled", "caught", "lbw", "stumped", "run out", "hit wicket")
+
+
+def style_delivery_scoring(outcome_quality: str, dismissal: str = NOT_OUT) -> ScoringInfo:
+    """
+    Turn the style-library engine's own OUTCOME_QUALITY judgement into an actual
+    scorecard entry -- the batter's-outcome the style-library engine has never
+    had (see cv-pipeline/README.md: it has no ball tracking, so it never knew
+    whether a delivery produced a run or a wicket, only a mastery-scoring label).
+
+    Deliberately NOT built the way DEFAULT_SCORING above turns a sensor's
+    "missed" into a wicket: that table is fed by net_outcome.py, where a
+    "missed" delivery is already known to be a specific, simulated ball aimed
+    at a real line and length, so a genuine miss really is bowled unless
+    laws.resolve_no_contact() says the ball was never on target anyway. The
+    style-library engine has no delivery-flight model at all -- a coach typing
+    "missed" here is only saying the bat made no contact, which in real
+    cricket usually is NOT a wicket (most beaten deliveries miss the stumps
+    too). So whether a wicket fell is asked for separately, as `dismissal` --
+    exactly the one thing anyone watching, live or on a video clip, can call
+    correctly without any AI, rather than an algorithm guessing at it.
+
+    `dismissal` is "not out" (default) or one of DISMISSAL_TYPES. Runs from
+    RUNS_FOR_OUTCOME_QUALITY are zeroed whenever the batter was dismissed --
+    a simplifying assumption that holds for bowled/caught/lbw/stumped/hit
+    wicket, but not always for a run out that follows a completed run, which
+    this does not model separately.
+    """
+    if outcome_quality not in RUNS_FOR_OUTCOME_QUALITY:
+        raise KeyError(f"Unknown outcome quality '{outcome_quality}'. Known: {list(RUNS_FOR_OUTCOME_QUALITY)}")
+    if dismissal not in DISMISSAL_TYPES:
+        raise KeyError(f"Unknown dismissal '{dismissal}'. Known: {list(DISMISSAL_TYPES)}")
+    if dismissal == NOT_OUT:
+        return ScoringInfo(runs=RUNS_FOR_OUTCOME_QUALITY[outcome_quality])
+    return ScoringInfo(runs=0, is_wicket=True, dismissal=dismissal)
+
+
 def score_outcome(outcome: str, scoring_table: Optional[dict] = None) -> ScoringInfo:
     """Look up the cricket-scoring consequence of a reported outcome. Pass a
     custom scoring_table to override any entry (e.g. a coach who wants

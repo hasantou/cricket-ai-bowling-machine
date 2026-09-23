@@ -27,6 +27,7 @@ from .scorecard import (
     ScoringInfo,
     DEFAULT_SCORING,
     score_outcome,
+    style_delivery_scoring,
     classify_delivery_legality,
 )
 from .delivery_report import DeliveryReport, build_delivery_report
@@ -61,6 +62,7 @@ __all__ = [
     "ScoringInfo",
     "DEFAULT_SCORING",
     "score_outcome",
+    "style_delivery_scoring",
     "classify_delivery_legality",
     "DeliveryReport",
     "build_delivery_report",

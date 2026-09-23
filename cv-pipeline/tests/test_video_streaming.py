@@ -108,3 +108,14 @@ def test_a_plain_clip_has_no_cut_or_frame_rate_notes_and_a_still_camera_is_left_
         a = analyse_video(path, estimator=FakePose(swings=[60]))
         assert a.cut_events == [] and a.clip_notes == [] and not a.camera_moved
         assert a.delivery_notes == [[] for _ in a.estimates]
+
+
+def test_swing_frames_are_absolute_clip_indices_not_window_relative():
+    """swing_frames must be usable directly as `frame / fps` real-clip time -- a consumer aligning
+    this against another clock (e.g. commentary_labels.py) cannot re-derive the offset itself."""
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "c.mp4")
+        write_clip(path, n=150)
+        a = analyse_video(path, estimator=FakePose(swings=[60]))
+        assert len(a.swing_frames) == len(a.estimates) == 1
+        assert abs(a.swing_frames[0] - 60) <= 5     # within the detector's own smoothing/peak-picking slack

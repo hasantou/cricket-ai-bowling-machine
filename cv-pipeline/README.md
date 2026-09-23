@@ -261,6 +261,91 @@ What testing against real footage found, honestly:
   tested on synthetic skeletons only, not yet validated on real footage.**
   It needs a clip with the bowler in shot and large enough.
 
+## A net outcome estimate from video: six / four / dot / wicket
+
+Asked directly for this: in a net, with no boundary rope or fielders, was that ball a six, a four,
+a dot, or a wicket? `outcome_from_video.py` is the video-side counterpart to
+`trajectory-engine/net_outcome.py`, which already does this from a SENSOR's exit speed and launch
+angle. There is no sensor here, so this reads the same idea off the batter's arm motion instead:
+how fast the hands moved, and how much they rose.
+
+**The one thing to hold onto before trusting it**: this cannot see the ball, and cannot confirm
+bat-ball contact happened at all. It reads the swing the arms made and assumes the ball came off it
+the way the swing looks — so a hard, clean swing that missed the ball completely (a genuinely bowled
+delivery) looks identical to one that connected, because both are just "the arms swung fast". Every
+label says the SWING looked like something, not that the ball did. It is a prompt to go check the
+clip, not a scorecard entry.
+
+The rule: no swing -> dot ball. A swing that rose a lot without much pace -> wicket-type (a mistimed,
+lofted shot is the classic catch). Fast and lofted -> six-type. Fast and flatter -> four-type.
+Anything moderate defaults to dot, since that's the common outcome for an ordinary shot in a net.
+What the batter did in the ~2 seconds after the shot (`post_shot.py`: ran / stayed / lost track) is
+used only as a weak secondary nudge, never to call a wicket by itself — a tracking dropout after a
+shot could mean a dismissal, a camera cut, an occlusion, or the pose model simply losing them, and
+this cannot tell those apart. Thresholds (7 / 11 torso-lengths per second, 0.5 torso-lengths of net
+upward hand travel) are illustrative round numbers from real swings measured elsewhere in this
+project, not fitted to labelled outcomes — there is no accuracy figure, and none is claimed. Run
+on the real arena clip through the actual app code path: the two real swings read as four-type
+shots and the two stance/guard-taking moments (no real swing) correctly read as dot balls, matching
+what direct frame-by-frame inspection of that clip found earlier.
+
+## Real ground truth for free: commentary as labels
+
+A commentator saying "SIX!" or "That's out, bowled!" is a real human judgement of the outcome,
+already sitting on the clip's own audio track. `commentary_labels.py` turns that into timestamped
+outcome events (`transcribe_commentary()`, real speech-to-text via OpenAI's Whisper, run locally;
+`find_outcome_events()`, keyword matching over the transcript) and lines them up with the deliveries
+`video_pipeline.py` already detected (`align_events_to_deliveries()` — asymmetric, since a
+commentator reacts AFTER the ball, not at the same instant). `commentary_evaluation.py` is the
+connecting piece: it scores `outcome_from_video.py`'s six/four/dot/wicket estimate against these
+real labels and reports accuracy, following the same guardrails as `shot_calibration.py` (compare
+only where both sides have something to say, report a confusion breakdown, say plainly how few
+examples a number rests on).
+
+Real, found-by-testing bugs, each with a regression test:
+  - Whisper's "base" model heard "wicket" as "wicked" on a real ICC broadcast clip — matching only
+    the correct spelling would silently miss real wickets on real commentary.
+  - **"Not out"** — one of the single most common phrases in cricket commentary — contains the
+    standalone word "out" and was first read as a wicket, the exact opposite of what it means.
+  - **"Round/around/over the wicket"** describes the bowler's angle of approach, nothing to do with
+    a dismissal, and was first read as one (on the same real transcript, tolerant of the same
+    "wicket"->"wicked" mishearing).
+  - **A bare "out" was tried and dropped entirely**, not just special-cased: on a second real clip,
+    "Watch out, delivery, this is." was misread as a wicket. Every genuine dismissal actually seen
+    in real commentary so far has also said "wicket", "bowled", "caught", "stumped", "lbw" or
+    "given/run out" in the same breath — those specific words carry the signal instead, plus
+    narrower phrasings ("he's out", "that's out") for a plain call with no other keyword present.
+
+What this is NOT: automatic ground truth. Whisper can mishear or miss a call outright, so a human
+should still spot-check the matched commentary text before trusting a run of these as real
+calibration data — this makes labelling FASTER, it does not remove the human-in-the-loop step
+`shot_calibration.py`'s guardrails already require.
+
+## A real attempt at ball colour detection — an honest negative, carefully checked
+
+Closer, higher-production broadcast clips (found 2026-09-23) show the ball with much stronger colour
+contrast than the nets footage `motion_ball_detector.py` was tested against — worth a real second
+attempt, not assumed hopeless just because the earlier one failed on different footage.
+`color_ball_detector.py` thresholds HSV for the ball's measured red-orange (no motion model, no
+training). Re-running the EXISTING `motion_ball_detector.py` against these clips first reproduced the
+same honest failure as before: candidates landed on fielders' limbs and a helmet grille, not the ball.
+
+The colour approach was checked properly, against a real frame with the ball's position confirmed by
+eye, not just eyeballed for plausibility:
+  - A first threshold covering the ball's own measured hue range (0-32, from a probe centred on the
+    ball) came back with the ball's entire 40x40-pixel surroundings masked "red" — at this closeness
+    the batter's hand and the bat's grip share the same hue band, merging into one blob no
+    size/circularity filter can separate.
+  - Tightening on saturation (the ball's own pixels measured 137-158, clearly above the hand/grip in
+    the same frame) narrowed it but still did not isolate a clean candidate at the true position —
+    the closest survivor was still 16px off and visibly too large.
+  - **Colour alone does not reliably separate this ball from nearby skin and equipment at this
+    distance**, on the one real frame this was checked against. `tests/test_color_ball_detector.py`
+    confirms the method works correctly on the case it CAN solve (a clearly isolated red circle on a
+    plain background) — the gap is real footage's proximity and colour overlap, not a bug in the
+    matching logic. Worth revisiting with a per-clip saturation floor or a small classifier over
+    colour-mask candidates, not a bigger manual threshold sweep.
+
 ## Edited, panning, phone-recompressed footage (found using real TikTok clips)
 
 Eight TikTok clips (sent through WhatsApp, so recompressed to ~480 px wide) were run through
