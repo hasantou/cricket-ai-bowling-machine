@@ -1085,12 +1085,19 @@ else:
     if "traj_delivery_sent" not in st.session_state:
         st.session_state.traj_delivery_sent = False
 
-    # Simulate the flight up front — legality (wide/no-ball) is judged from
-    # this trajectory alone, before any outcome is even asked for.
-    sim_result = run_simulation(ball, env, next_ball)
-    # The Laws-based, bounce-aware call at the batter (a wide is where the ball PASSES the striker, not
-    # where it pitched). No-ball conditions are counted for information only - a machine has no front foot.
-    assessment = assess_delivery(ball, env, next_ball)
+    # Simulate the flight up front — legality (wide/no-ball) is judged from this trajectory alone,
+    # before any outcome is even asked for. Cached against `next_ball` itself: `assess_delivery()`
+    # runs two full trajectory simulations internally, and Streamlit reruns this whole script on
+    # every interaction anywhere on the page, not just when the delivery changes — without this,
+    # both simulations were being redone from scratch on every single click for no reason.
+    if st.session_state.get("traj_physics_cache_key") is not next_ball:
+        st.session_state.traj_physics_cache_key = next_ball
+        st.session_state.traj_sim_result = run_simulation(ball, env, next_ball)
+        # The Laws-based, bounce-aware call at the batter (a wide is where the ball PASSES the
+        # striker, not where it pitched). No-ball conditions are informational only - no front foot.
+        st.session_state.traj_assessment = assess_delivery(ball, env, next_ball)
+    sim_result = st.session_state.traj_sim_result
+    assessment = st.session_state.traj_assessment
     legality = "wide" if assessment.is_wide else None
     if "traj_legality_observer" not in st.session_state:
         st.session_state.traj_legality_observer = LegalityObserver()
