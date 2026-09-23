@@ -321,6 +321,33 @@ should still spot-check the matched commentary text before trusting a run of the
 calibration data — this makes labelling FASTER, it does not remove the human-in-the-loop step
 `shot_calibration.py`'s guardrails already require.
 
+## The obvious gap in the outcome estimate: it can't see a wicket, tried a fix
+
+Run against three real, commentary-confirmed clips (2026-09-23): `outcome_from_video.py` got the dot
+ball right, missed the four (no usable body tracking on that clip), and — importantly — on the
+confirmed WICKET clip it confidently guessed "four-type shot" and "six-type shot". That is not a
+near-miss, it is the expected result of how it works: it reads the batter's ARM MOTION, and a ball
+hitting the stumps does not change how the arms moved. It was never built to see a wicket at all.
+
+`wicket_detection.py` is a first real attempt at the right kind of signal: a broken wicket is a big,
+SUSTAINED visual change in a small, known region of the frame (three neat stumps become scattered
+debris and stay that way — unlike a ball merely passing near them, or ordinary noise, which is a
+brief blip). Found and pinned down on the real wicket clip by inspecting frames directly: the stumps
+visibly break between frames 56-65 of that clip (60fps), and the single largest frame-to-frame change
+in the whole clip is an unrelated EDIT CUT to a different camera angle, not the wicket - confirming
+"biggest change in the clip" alone is not a safe signal; sustain is what actually separates a real
+break from everything else.
+
+**Where this stands, honestly**: the sustain-vs-blip algorithm is sound and unit-tested on the
+synthetic case it's built for. Applying it to that real clip did not work cleanly - the batter's own
+body substantially overlaps the stumps throughout the delivery in this framing, so a rectangular
+region wide enough to contain the stumps also captured his shot and follow-through, and the measured
+signal never showed a clean, isolated spike distinguishing the real break from his own motion. This
+needs either a much more precisely hand-marked region than eyeballing a frame achieves, or excluding
+the batter's own already-tracked silhouette from the region before measuring change - a real next
+step, not attempted yet. It also assumes a still camera, the same limitation `camera_motion.py`
+exists to remove for the batter-region selector, not yet ported here.
+
 ## A real attempt at ball colour detection — an honest negative, carefully checked
 
 Closer, higher-production broadcast clips (found 2026-09-23) show the ball with much stronger colour
