@@ -348,6 +348,42 @@ the batter's own already-tracked silhouette from the region before measuring cha
 step, not attempted yet. It also assumes a still camera, the same limitation `camera_motion.py`
 exists to remove for the batter-region selector, not yet ported here.
 
+## Closing the loop: turning an outcome estimate into an adaptive-rating update
+
+trajectory-engine's Elo-style difficulty engine (`adaptive.py`) has always accepted an automated
+score: `PlayerProfile.record_outcome()` takes either a manual key ("six", "missed", ...) or "a raw
+0-1 float, so this same call is ready to be driven by an automated vision/sensor system later
+without changing its signature" — its own docstring, written before anything actually produced that
+float. `elo_outcome_bridge.py` is that missing piece: it translates cv-pipeline's own outcome labels
+onto the exact 0-1 scale `adaptive.OUTCOME_SCORES` already uses, from two different sources kept
+deliberately separate rather than blended into one number a caller can't tell apart:
+
+  - `score_from_commentary()` — a real commentator's own call (six/four/wicket/dot ball), already
+    ground truth via `commentary_labels.py`. Maps directly and is safe to apply to a rating
+    automatically. (Dot ball maps to "defended" rather than "beaten" — commentary alone can't tell a
+    solid defensive dot from one where the batter was beaten, and a defended dot is the far more
+    common real case; a named approximation, not a hidden guess.)
+  - `score_from_video_estimate()` — `outcome_from_video.py`'s arm-motion guess, which the previous
+    section just showed getting a real wicket wrong. This function always returns a confidence flag
+    alongside the score, and is unconfident (never safe to auto-apply, only to suggest) on exactly
+    the cases real-clip testing found unreliable: no swing measured at all (`UNCLEAR`), any `WICKET`
+    read (the one outcome directly confirmed wrong on real footage), and any estimate that leaned on
+    a secondary signal (post-shot running or a lost-tracking note) rather than the swing alone —
+    detected mechanically by checking whether `estimate_net_outcome()` attached more than its one
+    baseline caveat, not by re-guessing which cases are shaky.
+
+9 tests in `tests/test_elo_outcome_bridge.py`, including one that imports `adaptive.OUTCOME_SCORES`
+directly so the bridge's copied constants can't silently drift from the engine's real ones, and a
+mutation check: deleting the secondary-signal guard was confirmed to flip exactly the two tests
+built to catch that, and only those two, before the guard was restored.
+
+**Where this stands, honestly**: the bridge function itself is real, tested, and ready. What it is
+NOT yet is wired into the running app — `outcome_from_video.estimate_net_outcome()` isn't called
+anywhere in `app/app.py` today; the six/four/dot/wicket estimate exists as a standalone module, not
+a feature a player sees. Actually closing the loop end-to-end (call the estimator on an uploaded
+clip, run it through this bridge, pre-fill the outcome dropdown when confident, still require a
+human tap to confirm when not) is the real next step, not done here.
+
 ## A real attempt at ball colour detection — an honest negative, carefully checked
 
 Closer, higher-production broadcast clips (found 2026-09-23) show the ball with much stronger colour
@@ -589,7 +625,8 @@ python cv-pipeline/demo_live_delivery_detection.py path/to/clip.mp4   # the live
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-183 tests: feature-extraction math (including `footwork_lead_seconds`) and
+286 tests: the outcome-to-adaptive-rating bridge (`elo_outcome_bridge.py`, including a mutation
+check on its secondary-signal confidence guard), feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
 double-counting — against synthetic landmark sequences, the
