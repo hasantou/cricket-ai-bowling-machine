@@ -358,31 +358,42 @@ float. `elo_outcome_bridge.py` is that missing piece: it translates cv-pipeline'
 onto the exact 0-1 scale `adaptive.OUTCOME_SCORES` already uses, from two different sources kept
 deliberately separate rather than blended into one number a caller can't tell apart:
 
-  - `score_from_commentary()` — a real commentator's own call (six/four/wicket/dot ball), already
+  - `key_from_commentary()` — a real commentator's own call (six/four/wicket/dot ball), already
     ground truth via `commentary_labels.py`. Maps directly and is safe to apply to a rating
     automatically. (Dot ball maps to "defended" rather than "beaten" — commentary alone can't tell a
     solid defensive dot from one where the batter was beaten, and a defended dot is the far more
     common real case; a named approximation, not a hidden guess.)
-  - `score_from_video_estimate()` — `outcome_from_video.py`'s arm-motion guess, which the previous
+  - `key_from_video_estimate()` — `outcome_from_video.py`'s arm-motion guess, which the previous
     section just showed getting a real wicket wrong. This function always returns a confidence flag
-    alongside the score, and is unconfident (never safe to auto-apply, only to suggest) on exactly
+    alongside the key, and is unconfident (never safe to auto-apply, only to suggest) on exactly
     the cases real-clip testing found unreliable: no swing measured at all (`UNCLEAR`), any `WICKET`
     read (the one outcome directly confirmed wrong on real footage), and any estimate that leaned on
     a secondary signal (post-shot running or a lost-tracking note) rather than the swing alone —
     detected mechanically by checking whether `estimate_net_outcome()` attached more than its one
     baseline caveat, not by re-guessing which cases are shaky.
 
-9 tests in `tests/test_elo_outcome_bridge.py`, including one that imports `adaptive.OUTCOME_SCORES`
-directly so the bridge's copied constants can't silently drift from the engine's real ones, and a
-mutation check: deleting the secondary-signal guard was confirmed to flip exactly the two tests
-built to catch that, and only those two, before the guard was restored.
+Both return an `adaptive.OUTCOME_SCORES` **key** ("six", "boundary", "missed", "defended", ...), not
+a bare float — that's what `scorecard.ScoreCard.record_ball()` (the actual call the app makes per
+ball) needs: it passes the key to `profile.record_outcome()` for the Elo update AND to
+`score_outcome()` to work out runs/wickets, and the second of those only understands named keys, not
+a 0-1 number. A float would have silently satisfied one half of that call and broken the other.
 
-**Where this stands, honestly**: the bridge function itself is real, tested, and ready. What it is
-NOT yet is wired into the running app — `outcome_from_video.estimate_net_outcome()` isn't called
-anywhere in `app/app.py` today; the six/four/dot/wicket estimate exists as a standalone module, not
-a feature a player sees. Actually closing the loop end-to-end (call the estimator on an uploaded
-clip, run it through this bridge, pre-fill the outcome dropdown when confident, still require a
-human tap to confirm when not) is the real next step, not done here.
+11 tests in `tests/test_elo_outcome_bridge.py`, including one that imports `adaptive.OUTCOME_SCORES`
+directly so the bridge's copied keys can't silently drift from the engine's real ones, one that feeds
+every possible returned key straight into the real `scorecard.score_outcome()` to confirm none of
+them raise `KeyError`, and a mutation check: deleting the secondary-signal guard was confirmed to
+flip exactly the two tests built to catch that, and only those two, before the guard was restored.
+
+**Wired into the app**: "Estimate from a video clip" is now a third option (next to "Manual entry"
+and "Simulated impact sensor") for logging a delivery's outcome in the physics-based engine. Upload
+that delivery's clip, and it runs the real pipeline (`PoseEstimator` → `analyse_body_vectors` →
+`estimate_net_outcome` → `key_from_video_estimate`) and shows the raw estimate plus its reasoning and
+caveats. It never applies a guess for you: a confident read pre-fills the outcome radio (still
+requires clicking "Log delivery" to confirm), an unconfident one shows the weak guess but leaves the
+choice to you, and `UNCLEAR` shows no suggestion at all. Checked against a real clip end to end (a
+whole multi-angle broadcast highlight, harder than this was built for) and against a Streamlit
+`AppTest` walkthrough of the actual UI path — both run clean, and on that hard real clip it correctly
+refuses rather than guessing, exactly as designed.
 
 ## A real attempt at ball colour detection — an honest negative, carefully checked
 
@@ -625,7 +636,7 @@ python cv-pipeline/demo_live_delivery_detection.py path/to/clip.mp4   # the live
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-286 tests: the outcome-to-adaptive-rating bridge (`elo_outcome_bridge.py`, including a mutation
+288 tests: the outcome-to-adaptive-rating bridge (`elo_outcome_bridge.py`, including a mutation
 check on its secondary-signal confidence guard), feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than

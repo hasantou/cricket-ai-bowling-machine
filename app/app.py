@@ -46,6 +46,10 @@ from pose_estimation import PoseEstimator
 from outcome_bridge import VisionOutcomeEstimator
 from live_video_source import LiveVideoSource
 from live_delivery_detector import LiveDeliveryDetector
+from body_vectors import analyse_body_vectors
+from post_shot import analyse_post_shot_movement
+from outcome_from_video import estimate_net_outcome
+from elo_outcome_bridge import key_from_video_estimate
 from cricket_trajectory import (
     BallProperties, Environment, PlayerProfile, expected_success, OUTCOME_SCORES,
     Scorecard, classify_delivery_legality, run_simulation, score_outcome, build_delivery_report,
@@ -1277,7 +1281,7 @@ else:
             else:
                 outcome_mode = st.radio(
                     "How was the outcome determined?",
-                    ["Manual entry", "Simulated impact sensor"],
+                    ["Manual entry", "Simulated impact sensor", "Estimate from a video clip"],
                     horizontal=True,
                 )
                 if outcome_mode == "Manual entry":
@@ -1293,7 +1297,7 @@ else:
                         )
                         st.session_state.traj_delivery_sent = False
                         st.rerun()
-                else:
+                elif outcome_mode == "Simulated impact sensor":
                     st.caption(
                         "`machine_control/impact_sensor.py`'s `VelocitySensorOutcomeObserver` — an "
                         "exit-velocity reading (speed, launch angle, direction) instead of visually "
@@ -1389,6 +1393,75 @@ else:
                             st.rerun()
                         if st.button("Generate a different reading"):
                             del st.session_state.traj_sensor_reading
+                            st.rerun()
+                else:
+                    st.caption(
+                        "Uploads a short clip of just THIS delivery through cv-pipeline's pretrained pose "
+                        "model and reads the batter's swing (`outcome_from_video.py`), then suggests an "
+                        "outcome via `elo_outcome_bridge.py`. Read this carefully before trusting it: it "
+                        "cannot see the ball or confirm bat-ball contact happened at all, and tested "
+                        "against real labelled clips it got 1 of 3 real outcomes right. It is never applied "
+                        "for you — the outcome below is always a suggestion you confirm or correct, and it "
+                        "refuses to suggest anything at all for a wicket or an unmeasurable swing (see "
+                        "cv-pipeline/README.md, 'Closing the loop')."
+                    )
+                    video_clip = st.file_uploader(
+                        "This delivery's clip", type=["mp4", "mov", "avi", "mkv"], key="outcome_video_clip",
+                    )
+                    if video_clip is None:
+                        st.info("Upload this delivery's clip to get a suggested outcome.")
+                    else:
+                        cache_key = (video_clip.name, video_clip.size)
+                        if st.session_state.get("traj_outcome_video_cache_key") != cache_key:
+                            st.session_state.traj_outcome_video_cache_key = cache_key
+                            suffix = os.path.splitext(video_clip.name)[1] or ".mp4"
+                            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                                tmp.write(video_clip.getvalue())
+                                tmp_path = tmp.name
+                            try:
+                                source = LiveVideoSource(device=tmp_path)
+                                fps = source.fps
+                                landmarks, aspect = [], 1.0
+                                with PoseEstimator() as estimator:
+                                    for i, frame in enumerate(source.frames()):
+                                        if i == 0:
+                                            h, w = frame.shape[:2]
+                                            aspect = (w / h) if h else 1.0
+                                        landmarks.append(estimator.extract_landmarks_from_one_live_frame(frame, fps))
+                                source.close()
+                            finally:
+                                os.unlink(tmp_path)
+                            rep = analyse_body_vectors(landmarks, fps, aspect)
+                            post = analyse_post_shot_movement(landmarks, fps, aspect, rep.peak_frame) if rep is not None else None
+                            estimate = estimate_net_outcome(rep, post)
+                            st.session_state.traj_outcome_video_estimate = estimate
+                            st.session_state.traj_outcome_video_guess = key_from_video_estimate(estimate)
+                        estimate = st.session_state.traj_outcome_video_estimate
+                        guess = st.session_state.traj_outcome_video_guess
+                        st.info(f"**Video estimate: {estimate.outcome}** — {estimate.reasoning}")
+                        for note in estimate.caveats:
+                            st.caption("⚠️ " + note)
+                        outcome_keys = list(OUTCOME_SCORES.keys())
+                        if guess.outcome_key is None:
+                            st.warning(guess.reason + " Pick the outcome manually below.")
+                            default_index = 0
+                        elif guess.is_confident:
+                            st.success(f"Suggested outcome: **{guess.outcome_key}** — {guess.reason} Confirm or change it below.")
+                            default_index = outcome_keys.index(guess.outcome_key)
+                        else:
+                            st.warning(f"Weak suggestion only: **{guess.outcome_key}** — {guess.reason}")
+                            default_index = outcome_keys.index(guess.outcome_key)
+                        outcome = st.radio(
+                            "Outcome", outcome_keys, horizontal=True, index=default_index, key="video_outcome_radio",
+                        )
+                        if st.button("Log delivery", type="primary", key="log_from_video"):
+                            card.record_ball(profile, ball, next_ball, sim_result, outcome=outcome, legality=None)
+                            st.session_state.traj_next_delivery = suggest_next_delivery(
+                                profile, ball,
+                                challenge_margin=_margin_for_target(st.session_state.traj_target_success),
+                            )
+                            st.session_state.traj_delivery_sent = False
+                            del st.session_state.traj_outcome_video_cache_key
                             st.rerun()
 
         inner_history = getattr(controller._inner, "history", None)

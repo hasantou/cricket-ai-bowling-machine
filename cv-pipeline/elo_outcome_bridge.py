@@ -1,35 +1,40 @@
 """
-Bridges cv-pipeline's outcome estimates onto the 0-1 scale trajectory-engine's
-adaptive.py Elo engine already expects, so a delivery's real outcome can update a
-player's adaptive rating without a human typing it into the app's dropdown.
+Bridges cv-pipeline's outcome estimates onto adaptive.py's OUTCOME_SCORES keys, so a
+delivery's real outcome can drive both the Elo rating AND the scorecard (runs, wickets)
+without a human typing it into the app's dropdown.
 
-The hook on the other end has existed all along: adaptive.PlayerProfile.record_outcome()
-was built to take either a manual OUTCOME_SCORES key or "a raw 0-1 float, so this same
-call is ready to be driven by an automated vision/sensor system later without changing
-its signature" (its own docstring). Nothing before this module actually produced that
-float from cv-pipeline's outputs — this is that missing piece.
+Returns the KEY ("six", "boundary", "missed", "defended", ...), not a bare float. That
+match matters: `scorecard.ScoreCard.record_ball()` — the actual call the app makes per
+ball — needs the key for two different reasons at once, not one. It passes it straight
+to `profile.record_outcome()` for the Elo update (which does also accept a raw float,
+per that function's own docstring), but it ALSO passes it to `score_outcome()` to work
+out runs scored and whether it's a wicket — and that lookup only understands named keys,
+it has no notion of a bare 0-1 number. A float would silently satisfy the Elo half of
+record_ball() and then blow up (or worse, not blow up) on the scoring half, so the key is
+the only thing that actually plugs into how this app is wired, not a design preference.
 
-Two independently testable sources, kept SEPARATE rather than blended into one number a
+Two independently testable sources, kept SEPARATE rather than blended into one call a
 caller can't tell apart, because they earn very different trust:
 
-  * `score_from_commentary()` — a real commentator's own call (six/four/wicket/dot
+  * `key_from_commentary()` — a real commentator's own call (six/four/wicket/dot
     ball), already extracted as ground truth by commentary_labels.py. Subject only to
     Whisper mishearing a word (which commentary_labels.py already guards against with
-    its own fixes), this is safe to auto-apply to a player's rating.
+    its own fixes), this is safe to auto-apply to a player's rating and scorecard.
 
-  * `score_from_video_estimate()` — outcome_from_video.py's ARM-MOTION guess, which
+  * `key_from_video_estimate()` — outcome_from_video.py's ARM-MOTION guess, which
     reads the swing, not the ball. Tested against the real labelled clips this project
     has actually seen: right on a dot ball, wrong on a wicket (read as a four/six-type
     shot, because a broken wicket doesn't change how the arms moved), and unable to
     measure a body at all on one real four. That is not accurate enough to silently
-    move a player's rating — a wrongly-scored "six" would push their Elo the wrong way
-    on real data, which is worse than not updating it at all. So this function always
-    returns a `VideoOutcomeScore` with an `is_confident` flag, and callers MUST treat
-    `is_confident=False` as "ask a human", never as "apply anyway" — see its docstring
-    for exactly which cases that covers and why.
+    move a player's rating or scorecard — a wrongly-scored "six" would push their Elo
+    the wrong way AND wrongly credit six real runs, which is worse than not logging the
+    ball automatically at all. So this function always returns a `VideoOutcomeGuess`
+    with an `is_confident` flag, and callers MUST treat `is_confident=False` as "ask a
+    human", never as "apply anyway" — see its docstring for exactly which cases that
+    covers and why.
 
 Nothing here invents new thresholds: both functions are thin, honest translations of
-labels the two upstream modules already produce, onto the scale the Elo engine already
+labels the two upstream modules already produce, onto keys the scoring engine already
 consumes.
 """
 
@@ -45,37 +50,41 @@ from outcome_from_video import SIX as VIDEO_SIX
 from outcome_from_video import UNCLEAR
 from outcome_from_video import WICKET as VIDEO_WICKET
 
-# Re-expressed here rather than imported from adaptive.py, so this module has no
-# dependency on trajectory-engine being installed — a caller that only has cv-pipeline
-# can still compute a score; only actually calling record_outcome() needs adaptive.py.
-# Values are copied verbatim from adaptive.OUTCOME_SCORES and must stay in sync with it
-# (checked by test_elo_outcome_bridge.py importing both and comparing).
-_MISSED = 0.00
-_DEFENDED = 0.55
-_BOUNDARY = 0.95
-_SIX = 1.00
+# adaptive.OUTCOME_SCORES' own keys, re-typed here rather than imported so this module
+# has no hard dependency on trajectory-engine being installed — a caller that only has
+# cv-pipeline can still compute a key; only actually calling record_outcome()/
+# record_ball() needs adaptive.py itself. Kept in sync by
+# test_elo_outcome_bridge.py, which imports both and checks every key used below is a
+# real member of adaptive.OUTCOME_SCORES.
+_MISSED = "missed"
+_DEFENDED = "defended"
+_BOUNDARY = "boundary"
+_SIX = "six"
+
+_VIDEO_OUTCOME_TO_KEY = {DOT: _DEFENDED, VIDEO_FOUR: _BOUNDARY, VIDEO_SIX: _SIX}
 
 
 @dataclass(frozen=True)
-class VideoOutcomeScore:
-    score: Optional[float]      # None when there is nothing safe to report at all (UNCLEAR)
+class VideoOutcomeGuess:
+    outcome_key: Optional[str]  # an adaptive.OUTCOME_SCORES key, or None (nothing safe to report — UNCLEAR)
     is_confident: bool          # False means: show this as a suggestion, do not auto-apply it
     reason: str                 # why confident or not, for a human reviewing the suggestion
 
 
-def score_from_commentary(outcome: str) -> float:
+def key_from_commentary(outcome: str) -> str:
     """`outcome` is one of commentary_labels.py's four outcome strings (SIX, FOUR,
     WICKET, DOT_BALL). A real commentator's call is ground truth (modulo Whisper
     mishearing, already guarded against upstream) — always safe to apply directly.
 
-    DOT_BALL maps to "defended" (0.55) rather than "beaten" (0.05): commentary alone
-    can't tell a solidly-defended dot from one where the batter was beaten outside
-    off stump, and a defended dot is the far more common real case in normal play —
-    a named, documented approximation, not a hidden guess.
+    DOT_BALL maps to "defended" rather than "beaten": commentary alone can't tell a
+    solidly-defended dot from one where the batter was beaten outside off stump, and a
+    defended dot is the far more common real case in normal play — a named, documented
+    approximation, not a hidden guess.
 
-    WICKET maps to "missed" (0.00) regardless of how it happened (bowled, caught,
-    lbw, stumped, run out) — commentary_labels.py does not distinguish dismissal
-    types, and all of them are the worst outcome for the batter on this 0-1 scale.
+    WICKET maps to "missed" regardless of how it happened (bowled, caught, lbw,
+    stumped, run out) — commentary_labels.py does not distinguish dismissal types, and
+    "missed" ("played and missed entirely / bowled") is the closest existing bucket for
+    "the batter is out", the worst outcome on this scale either way.
     """
     return {
         SIX: _SIX,
@@ -85,14 +94,14 @@ def score_from_commentary(outcome: str) -> float:
     }[outcome]
 
 
-def score_from_video_estimate(estimate: OutcomeEstimate) -> VideoOutcomeScore:
-    """Translate outcome_from_video.py's arm-motion guess into a score plus an
+def key_from_video_estimate(estimate: OutcomeEstimate) -> VideoOutcomeGuess:
+    """Translate outcome_from_video.py's arm-motion guess into an outcome key plus an
     honest confidence flag.
 
     `is_confident` is False for exactly the cases real-clip testing found this
     estimator cannot be trusted on:
-      * UNCLEAR — no swing was measured at all; there is nothing to report (score
-        is None, not a guessed middle value).
+      * UNCLEAR — no swing was measured at all; there is nothing to report
+        (`outcome_key` is None, not a guessed middle value).
       * WICKET — the ONE outcome this project has directly confirmed the estimator
         gets wrong on real footage (a genuine wicket was read as a four/six-type
         shot). It can only ever suggest "wicket" itself from a mistimed-lofted-shot
@@ -109,18 +118,20 @@ def score_from_video_estimate(estimate: OutcomeEstimate) -> VideoOutcomeScore:
     than a guess with no data behind it at all.
     """
     if estimate.outcome == UNCLEAR:
-        return VideoOutcomeScore(None, False, "No swing was measured for this delivery — nothing to score.")
+        return VideoOutcomeGuess(None, False, "No swing was measured for this delivery — nothing to score.")
     if estimate.outcome == VIDEO_WICKET:
-        return VideoOutcomeScore(
+        return VideoOutcomeGuess(
             _MISSED, False,
             "Arm motion alone cannot confirm a wicket (tested on real footage: this exact path misread "
             "a real wicket as a boundary) — confirm from the clip before applying.",
         )
     if len(estimate.caveats) > 1:
-        return VideoOutcomeScore(
-            {DOT: _DEFENDED, VIDEO_FOUR: _BOUNDARY, VIDEO_SIX: _SIX}[estimate.outcome], False,
+        return VideoOutcomeGuess(
+            _VIDEO_OUTCOME_TO_KEY[estimate.outcome], False,
             "This estimate leaned on a secondary signal (post-shot movement), not the swing alone — "
             "confirm before applying.",
         )
-    score = {DOT: _DEFENDED, VIDEO_FOUR: _BOUNDARY, VIDEO_SIX: _SIX}[estimate.outcome]
-    return VideoOutcomeScore(score, True, "Read directly from a measured swing, primary signal only.")
+    return VideoOutcomeGuess(
+        _VIDEO_OUTCOME_TO_KEY[estimate.outcome], True,
+        "Read directly from a measured swing, primary signal only.",
+    )
