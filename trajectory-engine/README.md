@@ -152,10 +152,17 @@ caller — it's now a one-line wrapper around the `_with_reason` version that
 discards the reason, and for a fresh player (no skill spread yet, which is
 every existing test's setup) it takes the exact same code path as before.
 
-**Not done yet, on purpose (see "Where to calibrate first"):** the reason
-string exists in the API now, but nothing in `app/app.py` displays it to a
-player or coach yet — that UI wiring is the natural next step, kept
-separate rather than bundled in here.
+**Now wired into the app.** `targeting.suggest_aimed_delivery_with_reason()` carries the same
+`targeted_skill`/`reason` through aiming (line and length never change which skill a ball was
+chosen to test), and `app/app.py`'s player-rating panel shows all four `skill_ratings` side by
+side (with the current weakest marked), plus the actual reason text under "Next delivery to
+bowl" — e.g. *"Targeting spin (870, your lowest-rated skill) — this delivery's own difficulty
+is 34% driven by spin..."*, or an honest *"No dimension is clearly weaker than the others yet"*
+for a fresh or evenly-matched player. `suggest_aimed_delivery()` itself is still the unchanged
+public function every existing call site uses — the app's own thin wrapper now calls the
+`_with_reason` version once and stashes the reason as a side effect, so the SAME pick is made
+(not a second, different one from a separate call), and every one of its 7 call sites in
+`app.py` got the reason for free without individually changing.
 
 **The next ball can now also be generated to isolate that weak skill, not
 just re-ranked toward it.** The previous paragraph's `WEAK_SKILL_BIAS` only

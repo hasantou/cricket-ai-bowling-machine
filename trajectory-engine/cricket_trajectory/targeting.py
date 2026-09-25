@@ -28,8 +28,10 @@ import math
 import random
 from typing import Dict, Optional, Tuple
 
+from dataclasses import dataclass
+
 from . import constants as c
-from .adaptive import PlayerProfile, suggest_next_delivery
+from .adaptive import DeliverySuggestion, PlayerProfile, suggest_next_delivery_with_reason
 from .ball import BallProperties, Delivery, Environment
 from .laws import WICKET_X_M, WideRules, assess_delivery
 from .simulate import run_simulation
@@ -94,26 +96,62 @@ def sample_target(rng: random.Random, length_mix: Dict[str, float] = DEFAULT_LEN
     return band, WICKET_X_M - rng.uniform(lo, hi), rng.uniform(*corridor)
 
 
-def suggest_aimed_delivery(
+@dataclass(frozen=True)
+class AimedDeliverySuggestion:
+    """Same as adaptive.DeliverySuggestion, but for the AIMED delivery
+    (line and length solved in) that suggest_aimed_delivery() actually
+    returns -- the targeted_skill/reason describe the adaptive engine's
+    pick BEFORE aiming, since aiming a ball at a length never changes which
+    skill it was chosen to test."""
+    delivery: Delivery
+    targeted_skill: Optional[str]
+    reason: str
+
+
+def suggest_aimed_delivery_with_reason(
     profile: PlayerProfile, ball: BallProperties, env: Optional[Environment] = None,
     challenge_margin: float = 60.0, rng: Optional[random.Random] = None,
     length_mix: Dict[str, float] = DEFAULT_LENGTH_MIX, corridor: Tuple[float, float] = LINE_CORRIDOR_M,
     max_attempts: int = 6, legal_only: bool = True, wide_rules: WideRules = WideRules(), **suggest_kwargs,
-) -> Delivery:
-    """The adaptive suggestion (unchanged difficulty logic), aimed at a sampled line and length, and —
+) -> AimedDeliverySuggestion:
+    """The adaptive suggestion (unchanged difficulty logic, now skill-targeted -- see
+    adaptive.suggest_next_delivery_with_reason()), aimed at a sampled line and length, and —
     if `legal_only` — verified not to be a wide by the Laws-based check. Falls back to the unaimed
     suggestion, labelled as such, only if nothing could be aimed after `max_attempts` tries."""
     rng = rng or random.Random()
     env = env or Environment()
-    last = None
+    last_suggestion: Optional[DeliverySuggestion] = None
     for _ in range(max_attempts):
-        candidate = suggest_next_delivery(profile, ball, challenge_margin=challenge_margin, rng=rng, **suggest_kwargs)
-        last = candidate
+        suggestion = suggest_next_delivery_with_reason(profile, ball, challenge_margin=challenge_margin, rng=rng, **suggest_kwargs)
+        last_suggestion = suggestion
+        candidate = suggestion.delivery
         band, px, py = sample_target(rng, length_mix, corridor)
         aimed = aim_delivery(ball, env, candidate, px, py)
         if aimed is None:
             continue
         if legal_only and assess_delivery(ball, env, aimed, wide_rules).is_wide:
             continue
-        return dataclasses.replace(aimed, label=f"{aimed.label} [{band}]")
-    return dataclasses.replace(last, label=f"{last.label} [unaimed: could not solve a legal line and length]")
+        return AimedDeliverySuggestion(
+            dataclasses.replace(aimed, label=f"{aimed.label} [{band}]"), suggestion.targeted_skill, suggestion.reason,
+        )
+    last = last_suggestion.delivery
+    return AimedDeliverySuggestion(
+        dataclasses.replace(last, label=f"{last.label} [unaimed: could not solve a legal line and length]"),
+        last_suggestion.targeted_skill, last_suggestion.reason,
+    )
+
+
+def suggest_aimed_delivery(
+    profile: PlayerProfile, ball: BallProperties, env: Optional[Environment] = None,
+    challenge_margin: float = 60.0, rng: Optional[random.Random] = None,
+    length_mix: Dict[str, float] = DEFAULT_LENGTH_MIX, corridor: Tuple[float, float] = LINE_CORRIDOR_M,
+    max_attempts: int = 6, legal_only: bool = True, wide_rules: WideRules = WideRules(), **suggest_kwargs,
+) -> Delivery:
+    """Unchanged public behaviour: just the aimed Delivery, no reason attached.
+    See suggest_aimed_delivery_with_reason() for the same pick plus WHY it was
+    made -- this is now a thin wrapper around that, not a separate
+    implementation, so the two can never quietly drift apart."""
+    return suggest_aimed_delivery_with_reason(
+        profile, ball, env, challenge_margin, rng, length_mix, corridor, max_attempts, legal_only, wide_rules,
+        **suggest_kwargs,
+    ).delivery

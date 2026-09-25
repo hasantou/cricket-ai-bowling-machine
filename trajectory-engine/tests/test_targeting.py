@@ -61,3 +61,30 @@ def test_across_many_suggestions_no_wides_and_more_than_one_length():
         wides += a.is_wide
         lengths.add(d.label.rsplit("[", 1)[-1])
     assert wides == 0 and len(lengths) >= 3
+
+
+# ---- suggest_aimed_delivery_with_reason: the aimed delivery plus WHY it was chosen ----
+
+def test_with_reason_and_plain_versions_give_the_same_delivery_for_the_same_seed():
+    from cricket_trajectory.targeting import suggest_aimed_delivery_with_reason
+    plain = suggest_aimed_delivery(PlayerProfile(name="p", rating=1000), BALL, ENV, rng=random.Random(3))
+    full = suggest_aimed_delivery_with_reason(PlayerProfile(name="p", rating=1000), BALL, ENV, rng=random.Random(3))
+    assert (plain.speed_mps, plain.vertical_launch_deg, plain.horizontal_launch_deg) == \
+           (full.delivery.speed_mps, full.delivery.vertical_launch_deg, full.delivery.horizontal_launch_deg)
+
+
+def test_with_reason_targets_a_clear_weakness_on_the_aimed_delivery_too():
+    from cricket_trajectory.targeting import suggest_aimed_delivery_with_reason
+    profile = PlayerProfile(name="p", rating=1050)
+    profile.skill_ratings["spin"] = 900.0  # a clear, unambiguous weakness
+    suggestion = suggest_aimed_delivery_with_reason(profile, BALL, ENV, rng=random.Random(11))
+    assert suggestion.targeted_skill == "spin"
+    assert "spin" in suggestion.reason.lower()
+    assert not assess_delivery(BALL, ENV, suggestion.delivery).is_wide  # aiming still works normally
+
+
+def test_with_reason_says_nothing_targeted_for_a_fresh_evenly_matched_player():
+    from cricket_trajectory.targeting import suggest_aimed_delivery_with_reason
+    suggestion = suggest_aimed_delivery_with_reason(PlayerProfile(name="p", rating=1000), BALL, ENV, rng=random.Random(4))
+    assert suggestion.targeted_skill is None
+    assert "no dimension is clearly weaker" in suggestion.reason.lower()

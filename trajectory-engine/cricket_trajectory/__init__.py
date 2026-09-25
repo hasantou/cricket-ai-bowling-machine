@@ -42,7 +42,7 @@ from .shot_analysis import ShotAnalysis, analyse_shot
 from .shot_fusion import FusedShot, fuse_shot
 from .laws import DeliveryLegality, WideRules, assess_delivery
 from .crease_crossing import BounceModel, Crossing, predict_crossing
-from .targeting import aim_delivery, suggest_aimed_delivery
+from .targeting import aim_delivery, suggest_aimed_delivery, suggest_aimed_delivery_with_reason, AimedDeliverySuggestion
 from .delivery_story import DeliveryStory, ImpactInfo, SyncInfo, VideoDeliveryInfo, build_story
 from .net_outcome import (
     NetOutcome,
@@ -92,6 +92,8 @@ __all__ = [
     "predict_crossing",
     "aim_delivery",
     "suggest_aimed_delivery",
+    "suggest_aimed_delivery_with_reason",
+    "AimedDeliverySuggestion",
     "DeliveryStory",
     "ImpactInfo",
     "SyncInfo",

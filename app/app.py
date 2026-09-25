@@ -56,7 +56,8 @@ from cricket_trajectory import (
     analyse_shot,
 )
 from cricket_trajectory.adaptive import delivery_difficulty_rating
-from cricket_trajectory import suggest_aimed_delivery, assess_delivery, build_story, ImpactInfo
+from cricket_trajectory import suggest_aimed_delivery, suggest_aimed_delivery_with_reason, assess_delivery, build_story, ImpactInfo
+from cricket_trajectory.adaptive import SKILL_DIMENSIONS, SKILL_TIE_SPREAD
 from footwork import analyse_footwork, BOWLER_ON_LEFT, BOWLER_ON_RIGHT, SIDE_ON as _SIDE_ON
 from story_adapter import video_info_from
 from cricket_trajectory.laws import resolve_no_contact
@@ -371,13 +372,23 @@ def _analyse_clip_live(video_bytes: bytes, suffix: str):
 
 def suggest_next_delivery(profile, ball, challenge_margin=60.0):
     """The one place the app asks for the next ball. It is the adaptive engine's difficulty choice
-    (unchanged), AIMED at a sampled line and length by a physics solve and, unless switched off,
+    (skill-targeted when the player has a clear weakness — see suggest_next_delivery_with_reason() in
+    adaptive.py), AIMED at a sampled line and length by a physics solve and, unless switched off,
     verified not to be a wide (trajectory-engine/targeting.py + laws.py). Before this, every ball left
-    the machine at the same angle: measured 35% wides and no good-length balls."""
-    return suggest_aimed_delivery(
+    the machine at the same angle: measured 35% wides and no good-length balls.
+
+    Also stashes WHY this particular ball was chosen into session state (traj_next_delivery_reason /
+    traj_next_delivery_targeted_skill) as a side effect, so every one of this function's existing call
+    sites gets that for free without each needing to change — the delivery returned is identical to
+    calling suggest_aimed_delivery() directly (same rng consumption; this only reads the reason off
+    the same pick, it doesn't make a second, different one)."""
+    suggestion = suggest_aimed_delivery_with_reason(
         profile, ball, st.session_state.get("traj_env"), challenge_margin=challenge_margin,
         legal_only=st.session_state.get("traj_legal_only", True),
     )
+    st.session_state.traj_next_delivery_reason = suggestion.reason
+    st.session_state.traj_next_delivery_targeted_skill = suggestion.targeted_skill
+    return suggestion.delivery
 
 
 def _show_story(story):
@@ -1119,6 +1130,9 @@ else:
             f"(engine targets ~{st.session_state.traj_target_success*100:.0f}%, "
             "adjustable in the sidebar)"
         )
+        reason = st.session_state.get("traj_next_delivery_reason")
+        if reason:
+            st.caption(f"🎯 {reason}")
         sent_speed = (
             st.session_state.get("traj_last_release_speed")
             if st.session_state.traj_delivery_sent else None
@@ -1503,6 +1517,21 @@ else:
         st.subheader("Player rating")
         st.metric(profile.name, f"{profile.rating:.0f}", help=profile.skill_tier())
         st.caption(f"Skill tier: **{profile.skill_tier()}**")
+
+        st.caption("Per-skill rating (same Elo scale, one per attribute):")
+        skill_cols = st.columns(len(SKILL_DIMENSIONS))
+        weakest = profile.weakest_skill()
+        for col, dim in zip(skill_cols, SKILL_DIMENSIONS):
+            label = dim.capitalize() + (" ⬇" if dim == weakest else "")
+            col.metric(label, f"{profile.skill_ratings[dim]:.0f}")
+        spread = max(profile.skill_ratings.values()) - min(profile.skill_ratings.values())
+        if spread < SKILL_TIE_SPREAD:
+            st.caption(
+                f"All four are within {spread:.0f} points of each other — not enough of a gap yet to call "
+                "a real weakness (see `SKILL_TIE_SPREAD`); the next ball still varies everything broadly."
+            )
+        else:
+            st.caption(f"⬇ **{weakest}** is currently the lowest — the next ball targets it specifically (see below).")
 
         scored_balls = [r for r in card.balls if r.player_rating_after is not None]
         if scored_balls:
