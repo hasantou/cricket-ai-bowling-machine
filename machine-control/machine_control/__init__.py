@@ -21,6 +21,9 @@ from .controller import MachineController, SimulatedMachineController, Commanded
 from .safety import SafeMachineController, SafetyLimits, SafetyViolation
 from .outcome_observer import OutcomeObserver, ScriptedOutcomeObserver
 from .session_store import save_profile, load_profile, save_scorecard, load_scorecard
+from .profile_store import (
+    save_named_profile, load_named_profile, list_known_batters, profile_summary, ProfileNameCollision,
+)
 from .orchestrator import MachineOrchestrator, OrchestratorEvent
 from .release_sensor import ReleaseSensor, SimulatedReleaseSensor, SpeedCalibrator, ReleaseMeasurement
 from .impact_sensor import (
@@ -33,6 +36,7 @@ __all__ = [
     "SafeMachineController", "SafetyLimits", "SafetyViolation",
     "OutcomeObserver", "ScriptedOutcomeObserver",
     "save_profile", "load_profile", "save_scorecard", "load_scorecard",
+    "save_named_profile", "load_named_profile", "list_known_batters", "profile_summary", "ProfileNameCollision",
     "MachineOrchestrator", "OrchestratorEvent",
     "ReleaseSensor", "SimulatedReleaseSensor", "SpeedCalibrator", "ReleaseMeasurement",
     "ImpactSensor", "SimulatedImpactSensor", "ImpactSensorOutcomeObserver", "NoContactDetected",

@@ -107,6 +107,27 @@ dataclasses already, by design (see `trajectory-engine/README.md`) — actual
 JSON persistence. Nothing decides *when* to save automatically; callers
 (the app, or a real deployment) do that explicitly.
 
+**Long-term, per-batter profiles.** `session_store.py` alone still needed a
+person to manage individual JSON files by hand — nothing found "this
+batter's" file automatically. `profile_store.py` closes that one gap:
+`save_named_profile`/`load_named_profile` key a profile by the batter's own
+name (slugified to a safe filename), so a returning batter's second session
+finds their real history — every skill rating, every delivery ever faced —
+without anyone tracking file paths. `list_known_batters` is what a "pick a
+returning batter" dropdown would call, and `profile_summary` gives a
+long-term snapshot (deliveries faced, current skill ratings, and a rating
+trend once at least 20 deliveries exist) instead of just the current number.
+
+Deliberately the simplest thing that solves today's actual problem: one
+JSON file per batter in a directory, no database, no server. That's not the
+design for multiple machines needing the same batter's profile at once —
+this only becomes wrong once that's a real requirement, and swapping the
+storage functions for a real database then is a contained change, since
+nothing calling them needs to know the difference. The one real safety
+property this DOES enforce now: two different batters whose names slugify
+to the same filename (`"Sam"` / `"SAM"`) raise `ProfileNameCollision`
+instead of one silently overwriting the other's history.
+
 ## Run it
 
 ```
