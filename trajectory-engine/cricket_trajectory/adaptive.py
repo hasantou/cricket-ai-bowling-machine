@@ -211,6 +211,19 @@ def _dimension_relevance(factors: dict) -> dict:
     function can honestly promise until a bounce-aware spin difficulty
     exists.
 
+    Seam-drag is, if anything, worse off than spin: checked directly, even
+    at seam-drag's own physical peak angle (90 degrees, zero swing, zero
+    spin) with a merely-moderate pace, seam's relevance share still comes
+    out under 3% -- `seam_drag_coefficient()`'s own cds_max=0.06 ceiling is
+    simply smaller than pace's baseline contribution at almost any bowling
+    speed. `_isolating_candidate()` (below) still measurably concentrates
+    what little seam/spin signal exists over generating everything at
+    random -- roughly double for seam, in a direct comparison -- but it
+    cannot make either the DOMINANT reason a delivery is rated hard. That
+    ceiling is physical, and the honest fix is the same one spin needs: a
+    real difficulty contribution from turf/bounce behaviour, not more
+    tuning of `_DIMENSION_WEIGHTS`.
+
     Falls back to equal relevance (0.25 each) for the one edge case where
     every factor is genuinely zero (a delivery with no pace, seam, swing or
     spin at all isn't physically real, but nothing here should divide by
@@ -338,8 +351,29 @@ class PlayerProfile:
 
 _SPIN_TYPES: Tuple[str, ...] = ("none", "backspin", "topspin", "offspin", "legspin")
 
+#: A moderate, "nothing special" pace band used for whichever dimensions a
+#: candidate is NOT deliberately isolating -- e.g. varying seam angle to
+#: test swing shouldn't also accidentally max out the pace factor. Central
+#: enough that pace_factor stays modest without being unrealistically slow.
+NEUTRAL_SPEED_RANGE_KMH = (90.0, 110.0)
+#: Seam angle bands picked from swing_coefficient()/seam_drag_coefficient()'s
+#: OWN documented shapes, not guessed: swing peaks around 20-25 degrees and
+#: is genuinely near zero by 90 degrees, while seam-drag keeps RISING all the
+#: way to 90 degrees (that is literally what a real cross-seam delivery is).
+#: Picking a seam angle from the right band is how this model can isolate
+#: swing from seam at all -- they share one input parameter, so they can't be
+#: varied independently, but they peak at different, well-separated angles.
+SWING_PEAK_SEAM_ANGLE_DEG = (15.0, 30.0)      # conventional swing bowling
+SEAM_DRAG_PEAK_ANGLE_DEG = (75.0, 90.0)       # cross-seam
+NEUTRAL_SEAM_ANGLE_DEG = (0.0, 5.0)           # minimal swing AND seam-drag, for isolating pace or spin
+
 
 def _random_candidate(rng: random.Random, speed_range_kmh: Tuple[float, float]) -> Delivery:
+    """Broadly varied across every parameter at once -- used when no
+    dimension is a clear-enough weakness to target yet (see
+    suggest_next_delivery_with_reason()), so a fresh or evenly-matched
+    player still sees the same varied training this function has always
+    produced."""
     speed_kmh = rng.uniform(*speed_range_kmh)
     seam_angle = rng.uniform(0.0, 90.0)
     spin_type = rng.choice(_SPIN_TYPES)
@@ -350,6 +384,39 @@ def _random_candidate(rng: random.Random, speed_range_kmh: Tuple[float, float]) 
         spin_rad_s=Delivery.spin_vector(spin_type, rpm),
         reverse_swing=speed_kmh > 130.0,
         label=f"{spin_type} {speed_kmh:.0f}km/h seam{seam_angle:.0f}deg",
+    )
+
+
+def _isolating_candidate(rng: random.Random, speed_range_kmh: Tuple[float, float], targeted: str) -> Delivery:
+    """Vary ONE dimension across its full realistic range while holding the
+    others near a neutral setting that doesn't stress them much -- the "test
+    one weakness at a time" a coach would deliberately choose, instead of
+    _random_candidate()'s "vary everything at once" always leaving it
+    ambiguous which attribute actually caused the difficulty.
+
+    Honest limit, not hidden: swing and seam-drag share ONE input parameter
+    (seam_angle_deg) in this model, so they cannot be made fully independent
+    of each other the way pace and spin can be -- see the module-level seam
+    angle constants above for how this picks a band that leans hard toward
+    one or the other rather than claiming a false four-way independence.
+    """
+    seam_angle_by_target = {
+        "swing": SWING_PEAK_SEAM_ANGLE_DEG,
+        "seam": SEAM_DRAG_PEAK_ANGLE_DEG,
+    }
+    speed_kmh = rng.uniform(*speed_range_kmh) if targeted == "pace" else rng.uniform(*NEUTRAL_SPEED_RANGE_KMH)
+    seam_angle = rng.uniform(*seam_angle_by_target.get(targeted, NEUTRAL_SEAM_ANGLE_DEG))
+    if targeted == "spin":
+        spin_type = rng.choice([t for t in _SPIN_TYPES if t != "none"])
+        rpm = rng.uniform(200.0, 1200.0)
+    else:
+        spin_type, rpm = "none", 0.0
+    return Delivery(
+        speed_mps=c.kmh_to_ms(speed_kmh),
+        seam_angle_deg=seam_angle,
+        spin_rad_s=Delivery.spin_vector(spin_type, rpm),
+        reverse_swing=speed_kmh > 130.0,
+        label=f"[isolating {targeted}] {spin_type} {speed_kmh:.0f}km/h seam{seam_angle:.0f}deg",
     )
 
 
@@ -437,7 +504,11 @@ def suggest_next_delivery_with_reason(profile: PlayerProfile,
 
     scored = []
     for _ in range(pool_size):
-        candidate = _random_candidate(rng, speed_range_kmh)
+        # A clear weakness: generate candidates that ISOLATE it (vary that one dimension,
+        # hold the others neutral) instead of varying everything at once -- see
+        # _isolating_candidate()'s docstring for why this is the real "single vs. multiple
+        # variable" decision, not just re-weighting an already broadly-random pool.
+        candidate = _isolating_candidate(rng, speed_range_kmh, targeted) if targeted else _random_candidate(rng, speed_range_kmh)
         rating = delivery_difficulty_rating(candidate, ball)
         scored.append((abs(rating - target_rating), rating, candidate))
 

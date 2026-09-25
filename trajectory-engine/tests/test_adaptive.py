@@ -6,11 +6,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cricket_trajectory.ball import BallProperties, Delivery
 from cricket_trajectory.adaptive import (
+    NEUTRAL_SEAM_ANGLE_DEG,
+    NEUTRAL_SPEED_RANGE_KMH,
+    SEAM_DRAG_PEAK_ANGLE_DEG,
     SKILL_DIMENSIONS,
     SKILL_TIE_SPREAD,
+    SWING_PEAK_SEAM_ANGLE_DEG,
     PlayerProfile,
     _dimension_factors,
     _dimension_relevance,
+    _isolating_candidate,
+    _random_candidate,
     _shortlist_weights,
     delivery_difficulty_rating,
     dimension_delivery_rating,
@@ -250,3 +256,80 @@ def test_next_delivery_after_with_reason_returns_both_a_record_and_a_suggestion(
     assert record.outcome_score == 0.75
     assert suggestion.delivery is not None
     assert suggestion.reason
+
+
+# ---- _isolating_candidate: vary ONE dimension, hold the others neutral ----
+
+def _kmh(delivery):
+    return delivery.speed_mps / 1000.0 * 3600.0
+
+
+def test_isolating_pace_varies_speed_and_holds_seam_and_spin_neutral():
+    rng = random.Random(7)
+    speeds, seams = [], []
+    for _ in range(100):
+        d = _isolating_candidate(rng, (70.0, 150.0), "pace")
+        speeds.append(_kmh(d))
+        seams.append(d.seam_angle_deg)
+        assert all(w == 0.0 for w in d.spin_rad_s)
+    assert min(speeds) < 90.0 and max(speeds) > 130.0  # genuinely spans the full range, not a narrow slice
+    assert all(NEUTRAL_SEAM_ANGLE_DEG[0] <= s <= NEUTRAL_SEAM_ANGLE_DEG[1] for s in seams)
+
+
+def test_isolating_spin_varies_spin_and_holds_speed_and_seam_neutral():
+    rng = random.Random(7)
+    for _ in range(100):
+        d = _isolating_candidate(rng, (70.0, 150.0), "spin")
+        assert NEUTRAL_SPEED_RANGE_KMH[0] <= _kmh(d) <= NEUTRAL_SPEED_RANGE_KMH[1]
+        assert NEUTRAL_SEAM_ANGLE_DEG[0] <= d.seam_angle_deg <= NEUTRAL_SEAM_ANGLE_DEG[1]
+        assert any(w != 0.0 for w in d.spin_rad_s)  # never "no spin" when spin IS the target
+
+
+def test_isolating_swing_uses_the_swing_peak_seam_angle_band():
+    rng = random.Random(7)
+    for _ in range(100):
+        d = _isolating_candidate(rng, (70.0, 150.0), "swing")
+        assert NEUTRAL_SPEED_RANGE_KMH[0] <= _kmh(d) <= NEUTRAL_SPEED_RANGE_KMH[1]
+        assert SWING_PEAK_SEAM_ANGLE_DEG[0] <= d.seam_angle_deg <= SWING_PEAK_SEAM_ANGLE_DEG[1]
+        assert all(w == 0.0 for w in d.spin_rad_s)
+
+
+def test_isolating_seam_uses_the_cross_seam_peak_angle_band():
+    rng = random.Random(7)
+    for _ in range(100):
+        d = _isolating_candidate(rng, (70.0, 150.0), "seam")
+        assert SEAM_DRAG_PEAK_ANGLE_DEG[0] <= d.seam_angle_deg <= SEAM_DRAG_PEAK_ANGLE_DEG[1]
+        assert all(w == 0.0 for w in d.spin_rad_s)
+
+
+def _mean_relevance(candidates, dimension):
+    total = 0.0
+    for d in candidates:
+        factors = _dimension_factors(d, BALL, 1.225, 1.8e-5)
+        total += _dimension_relevance(factors)[dimension]
+    return total / len(candidates)
+
+
+def test_isolating_beats_broad_random_for_every_dimension_even_the_structurally_weak_ones():
+    """The honest, bounded claim: isolation measurably helps ALL four dimensions over
+    _random_candidate()'s "vary everything" approach -- even seam and spin, whose
+    absolute relevance share stays small regardless (see _dimension_relevance()'s
+    docstring: real physics caps how much either can ever contribute), isolation at
+    least concentrates what little signal exists instead of diluting it further."""
+    n = 400
+    for dim in SKILL_DIMENSIONS:
+        isolating = [_isolating_candidate(random.Random(1000 + i), (70.0, 150.0), dim) for i in range(n)]
+        broad = [_random_candidate(random.Random(2000 + i), (70.0, 150.0)) for i in range(n)]
+        isolating_mean = _mean_relevance(isolating, dim)
+        broad_mean = _mean_relevance(broad, dim)
+        assert isolating_mean > broad_mean, f"{dim}: isolating ({isolating_mean:.3f}) should beat broad-random ({broad_mean:.3f})"
+
+
+# ---- integration: suggest_next_delivery_with_reason actually uses the isolating generator ----
+
+def test_a_clear_pace_weakness_produces_deliveries_with_neutral_seam_angle():
+    p = PlayerProfile(name="P")
+    p.skill_ratings["pace"] = 1000.0 - SKILL_TIE_SPREAD - 1.0
+    suggestion = suggest_next_delivery_with_reason(p, BALL, rng=random.Random(5))
+    assert suggestion.targeted_skill == "pace"
+    assert NEUTRAL_SEAM_ANGLE_DEG[0] <= suggestion.delivery.seam_angle_deg <= NEUTRAL_SEAM_ANGLE_DEG[1]

@@ -155,7 +155,28 @@ every existing test's setup) it takes the exact same code path as before.
 **Not done yet, on purpose (see "Where to calibrate first"):** the reason
 string exists in the API now, but nothing in `app/app.py` displays it to a
 player or coach yet — that UI wiring is the natural next step, kept
-separate rather than bundled in here. `scorecard.py` is the bridge between
+separate rather than bundled in here.
+
+**The next ball can now also be generated to isolate that weak skill, not
+just re-ranked toward it.** The previous paragraph's `WEAK_SKILL_BIAS` only
+re-weighted an already broadly-random shortlist; `_isolating_candidate()`
+goes further and actually GENERATES candidates that vary the targeted
+dimension across its full range while holding the others near a neutral
+setting — the same "test one weakness at a time" logic a coach uses,
+instead of always varying pace/seam/spin together and hoping the target
+dimension happens to be prominent. Pace and spin can be varied fully
+independently; swing and seam share one input (`seam_angle_deg`) and can't
+be made fully independent of each other, so isolation instead leans on
+`swing_coefficient()`/`seam_drag_coefficient()`'s own documented peaks —
+conventional swing bowling sits at ~15-30°, cross-seam at ~75-90° — a real
+distinction, not an approximation. Checked directly across all four
+dimensions: isolating generation raises the average relevance of the
+targeted dimension over `_random_candidate()`'s broad approach every time —
+substantially for pace and swing, roughly double for seam, and a real but
+smaller lift for spin — without ever overriding the overall-difficulty
+shortlist that stays the primary filter.
+
+**4. Turn it into an actual scorecard.** `scorecard.py` is the bridge between
 a bowled ball and a real scorecard entry. It needs no sensor for legality —
 `classify_delivery_legality()` computes wide/no-ball directly from the
 delivery's own simulated trajectory, since the machine already knows exactly
