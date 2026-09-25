@@ -351,6 +351,13 @@ class PlayerProfile:
 
 _SPIN_TYPES: Tuple[str, ...] = ("none", "backspin", "topspin", "offspin", "legspin")
 
+#: The machine's realistic delivery envelope, named rather than left as inline
+#: defaults -- this is what machine-control/tests/test_safety_envelope.py
+#: checks SafetyLimits' defaults actually bound, so the two can't silently
+#: drift apart if either one changes later.
+DEFAULT_SPEED_RANGE_KMH: Tuple[float, float] = (70.0, 150.0)
+SPIN_RPM_RANGE: Tuple[float, float] = (200.0, 1200.0)   # ball spin, RPM -- see Delivery.spin_vector()
+
 #: A moderate, "nothing special" pace band used for whichever dimensions a
 #: candidate is NOT deliberately isolating -- e.g. varying seam angle to
 #: test swing shouldn't also accidentally max out the pace factor. Central
@@ -377,7 +384,7 @@ def _random_candidate(rng: random.Random, speed_range_kmh: Tuple[float, float]) 
     speed_kmh = rng.uniform(*speed_range_kmh)
     seam_angle = rng.uniform(0.0, 90.0)
     spin_type = rng.choice(_SPIN_TYPES)
-    rpm = 0.0 if spin_type == "none" else rng.uniform(200.0, 1200.0)
+    rpm = 0.0 if spin_type == "none" else rng.uniform(*SPIN_RPM_RANGE)
     return Delivery(
         speed_mps=c.kmh_to_ms(speed_kmh),
         seam_angle_deg=seam_angle,
@@ -408,7 +415,7 @@ def _isolating_candidate(rng: random.Random, speed_range_kmh: Tuple[float, float
     seam_angle = rng.uniform(*seam_angle_by_target.get(targeted, NEUTRAL_SEAM_ANGLE_DEG))
     if targeted == "spin":
         spin_type = rng.choice([t for t in _SPIN_TYPES if t != "none"])
-        rpm = rng.uniform(200.0, 1200.0)
+        rpm = rng.uniform(*SPIN_RPM_RANGE)
     else:
         spin_type, rpm = "none", 0.0
     return Delivery(
@@ -468,7 +475,7 @@ def suggest_next_delivery_with_reason(profile: PlayerProfile,
                                        challenge_margin: float = 60.0,
                                        pool_size: int = 40,
                                        shortlist_size: int = 5,
-                                       speed_range_kmh: Tuple[float, float] = (70.0, 150.0),
+                                       speed_range_kmh: Tuple[float, float] = DEFAULT_SPEED_RANGE_KMH,
                                        rng: Optional[random.Random] = None) -> DeliverySuggestion:
     """
     Generate a pool of physically varied candidate deliveries within the
@@ -542,7 +549,7 @@ def suggest_next_delivery(profile: PlayerProfile,
                            challenge_margin: float = 60.0,
                            pool_size: int = 40,
                            shortlist_size: int = 5,
-                           speed_range_kmh: Tuple[float, float] = (70.0, 150.0),
+                           speed_range_kmh: Tuple[float, float] = DEFAULT_SPEED_RANGE_KMH,
                            rng: Optional[random.Random] = None) -> Delivery:
     """Unchanged public behaviour: just the Delivery, no reason attached.
     See suggest_next_delivery_with_reason() for the same pick plus WHY it

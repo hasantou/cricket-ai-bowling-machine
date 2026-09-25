@@ -25,6 +25,8 @@ from .adaptive import (
     next_delivery_after_with_reason,
     OUTCOME_SCORES,
     SKILL_DIMENSIONS,
+    DEFAULT_SPEED_RANGE_KMH,
+    SPIN_RPM_RANGE,
 )
 from .scorecard import (
     Scorecard,
@@ -67,6 +69,8 @@ __all__ = [
     "next_delivery_after_with_reason",
     "OUTCOME_SCORES",
     "SKILL_DIMENSIONS",
+    "DEFAULT_SPEED_RANGE_KMH",
+    "SPIN_RPM_RANGE",
     "Scorecard",
     "BallRecord",
     "ScoringInfo",

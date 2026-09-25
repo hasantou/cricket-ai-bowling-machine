@@ -98,7 +98,25 @@ just because time has passed.
 
 `SafetyLimits`' defaults are a conservative placeholder, not a calibrated
 value — replace them with the real target machine's documented safe
-operating range once one is chosen.
+operating range once one is chosen. That placeholder isn't an arbitrary
+guess, though: `tests/test_safety_envelope.py` checks it directly against
+what the adaptive engine can actually generate (trajectory-engine's own
+`DEFAULT_SPEED_RANGE_KMH` / `SPIN_RPM_RANGE`, run through `WheelMachine`'s
+real forward model across the whole envelope, not just spot values) — the
+worst realistic case needs under 4200 RPM per wheel and under 1350 RPM of
+differential, comfortably inside the 5000/3000 defaults, with margin left
+for calibration error. If either envelope constant ever widens, this test
+is what catches the two silently drifting apart.
+
+**For a machine that has never been run before**, use
+`SafetyLimits.commissioning()` instead of the defaults — deliberately much
+tighter (1000 RPM / 500 RPM differential), standard practice for bringing
+up new, unverified hardware at reduced power before trusting it with a
+full-range command. Confirmed directly that it actually would reject a
+real full-pace delivery, not just that the numbers look smaller. Move to
+the full `SafetyLimits()` (or the real machine's own measured spec) only
+after a person has watched it behave safely at reduced power — never
+automatically.
 
 ## Resumability
 

@@ -40,10 +40,39 @@ class SafetyLimits:
     regardless of what any decision engine computes. Named, adjustable,
     not hidden — set these to the real machine's documented safe
     operating range once one is chosen; these defaults are a
-    conservative placeholder, not a calibrated value."""
+    conservative placeholder, not a calibrated value.
+
+    That placeholder is not an arbitrary guess, though — checked directly
+    against what the adaptive decision engine can actually generate (see
+    tests/test_safety_envelope.py): WheelMachine's own forward/inverse model
+    says even the fastest realistic delivery this project's own candidate
+    generator produces (170 km/h, no spin) needs under 4200 RPM per wheel
+    and under 1350 RPM of differential, well inside these defaults — so
+    5000/3000 is a real ceiling with deliberate headroom for calibration
+    error, not a number that happens to also be big.
+
+    For a machine that has NEVER been run before, prefer commissioning()
+    instead of these defaults — deliberately much lower, for the very first
+    power-on before anyone has confirmed the real machine behaves safely at
+    all, let alone matches this envelope."""
     min_wheel_rpm: float = 0.0
-    max_wheel_rpm: float = 5000.0        # placeholder ceiling - real machine spec should replace this
+    max_wheel_rpm: float = 5000.0        # validated ceiling - see test_safety_envelope.py; replace with the real machine's documented spec once one is chosen
     max_rpm_differential: float = 3000.0  # caps commanded spin indirectly (see machine.py's v1-v2 relation)
+
+    @classmethod
+    def commissioning(cls) -> "SafetyLimits":
+        """A deliberately much tighter set of limits for the FIRST time any
+        physical machine is connected and nobody has yet confirmed it
+        behaves safely — standard practice for commissioning new hardware
+        (bring it up at reduced power before trusting it with a full-range
+        command), not specific to this project. 1000 RPM is comfortably
+        enough to confirm the link, the protocol, and that both wheels spin
+        the right way, without ever approaching a speed that could hurt
+        anyone if something is wired backwards or a limit switch is
+        missing. Move to the full SafetyLimits() (or the real machine's own
+        measured spec) only after that basic check has been done by a
+        person, in person, watching the machine — never automatically."""
+        return cls(min_wheel_rpm=0.0, max_wheel_rpm=1000.0, max_rpm_differential=500.0)
 
 
 class SafeMachineController:
