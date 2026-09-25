@@ -1,4 +1,5 @@
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -6,12 +7,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from cricket_trajectory.ball import BallProperties, Delivery
 from cricket_trajectory.adaptive import (
     SKILL_DIMENSIONS,
+    SKILL_TIE_SPREAD,
     PlayerProfile,
     _dimension_factors,
     _dimension_relevance,
+    _shortlist_weights,
     delivery_difficulty_rating,
     dimension_delivery_rating,
     expected_success,
+    next_delivery_after_with_reason,
+    suggest_next_delivery,
+    suggest_next_delivery_with_reason,
 )
 
 BALL = BallProperties()
@@ -172,3 +178,75 @@ def test_player_profile_still_constructs_with_only_name_and_rating():
     p = PlayerProfile(name="P", rating=1100.0)
     assert p.rating == 1100.0
     assert p.skill_ratings == {d: 1000.0 for d in SKILL_DIMENSIONS}
+
+
+# ---- _shortlist_weights: the actual rule, tested directly against known candidates ----
+
+def test_no_targeted_dimension_gives_the_plain_pre_existing_weighting():
+    shortlist = [(0.0, 1000.0, "a"), (10.0, 1010.0, "b")]
+    assert _shortlist_weights(shortlist, BALL, targeted=None) == [1.0 / 1.0, 1.0 / 11.0]
+
+
+def test_a_candidate_leaning_more_on_the_targeted_dimension_gets_more_weight_at_equal_gap():
+    pace_only = pure_pace_delivery()
+    with_spin = leg_break_delivery()
+    shortlist = [(5.0, 1000.0, pace_only), (5.0, 1000.0, with_spin)]  # identical gap, isolates the bias term
+    weights = _shortlist_weights(shortlist, BALL, targeted="spin")
+    assert weights[1] > weights[0]  # the spinning delivery, which has real spin relevance, outweighs the pace-only one
+
+
+def test_the_weak_skill_bias_is_load_bearing_not_a_no_op():
+    """Mutation-style: with WEAK_SKILL_BIAS effectively zeroed (relevance term
+    dropped), two candidates at the same gap MUST tie -- confirming the bias
+    term above is genuinely what breaks that tie, not something else."""
+    shortlist = [(5.0, 1000.0, pure_pace_delivery()), (5.0, 1000.0, leg_break_delivery())]
+    plain = [1.0 / (1.0 + gap) for gap, _, _ in shortlist]
+    assert plain[0] == plain[1]  # equal gap -> equal weight without the bias term
+    biased = _shortlist_weights(shortlist, BALL, targeted="spin")
+    assert biased[0] != biased[1]  # the bias term is what breaks the tie
+
+
+# ---- suggest_next_delivery_with_reason: the actual "why" ----
+
+def test_a_fresh_profile_targets_no_dimension_and_says_so():
+    p = PlayerProfile(name="P")
+    suggestion = suggest_next_delivery_with_reason(p, BALL, rng=random.Random(1))
+    assert suggestion.targeted_skill is None
+    assert "no dimension is clearly weaker" in suggestion.reason.lower()
+
+
+def test_a_profile_with_a_clear_weakness_targets_it_by_name():
+    p = PlayerProfile(name="P")
+    p.skill_ratings["seam"] = 1000.0 - SKILL_TIE_SPREAD - 1.0  # just over the tie threshold, unambiguous
+    suggestion = suggest_next_delivery_with_reason(p, BALL, rng=random.Random(1))
+    assert suggestion.targeted_skill == "seam"
+    assert "seam" in suggestion.reason.lower()
+    assert "targeting" in suggestion.reason.lower()
+
+
+def test_a_tie_within_the_threshold_is_not_treated_as_a_real_weakness():
+    p = PlayerProfile(name="P")
+    p.skill_ratings["seam"] = 1000.0 - SKILL_TIE_SPREAD + 1.0  # just UNDER the threshold
+    suggestion = suggest_next_delivery_with_reason(p, BALL, rng=random.Random(1))
+    assert suggestion.targeted_skill is None
+
+
+# ---- suggest_next_delivery (old, public) is still exactly the .delivery half of the new call ----
+
+def test_suggest_next_delivery_matches_the_delivery_half_of_with_reason_for_the_same_seed():
+    p1, p2 = PlayerProfile(name="P"), PlayerProfile(name="P")
+    plain = suggest_next_delivery(p1, BALL, rng=random.Random(42))
+    full = suggest_next_delivery_with_reason(p2, BALL, rng=random.Random(42))
+    assert plain == full.delivery
+
+
+# ---- next_delivery_after_with_reason: the record+reason convenience call ----
+
+def test_next_delivery_after_with_reason_returns_both_a_record_and_a_suggestion():
+    p = PlayerProfile(name="P")
+    record, suggestion = next_delivery_after_with_reason(
+        p, BALL, pure_pace_delivery(), "controlled", rng=random.Random(3),
+    )
+    assert record.outcome_score == 0.75
+    assert suggestion.delivery is not None
+    assert suggestion.reason

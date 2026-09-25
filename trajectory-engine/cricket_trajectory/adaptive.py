@@ -353,28 +353,87 @@ def _random_candidate(rng: random.Random, speed_range_kmh: Tuple[float, float]) 
     )
 
 
-def suggest_next_delivery(profile: PlayerProfile,
-                           ball: BallProperties,
-                           challenge_margin: float = 60.0,
-                           pool_size: int = 40,
-                           shortlist_size: int = 5,
-                           speed_range_kmh: Tuple[float, float] = (70.0, 150.0),
-                           rng: Optional[random.Random] = None) -> Delivery:
+#: How far apart the four skill_ratings need to be before one is treated as
+#: an actual, worth-targeting weakness rather than Elo noise around a fresh
+#: or evenly-tested player. Below this spread, suggest_next_delivery_with_reason()
+#: says so honestly instead of inventing a "weak spot" out of a few points'
+#: difference that a single lucky/unlucky ball could produce.
+SKILL_TIE_SPREAD = 15.0
+
+#: How much extra weight a candidate gets in the shortlist for stressing the
+#: player's actual weakest dimension, ON TOP OF already being close to their
+#: overall target difficulty (the shortlist is still built from overall
+#: difficulty first -- this never picks a wildly-off-difficulty ball just
+#: because it happens to be spin-heavy). Named and adjustable, not hidden.
+WEAK_SKILL_BIAS = 1.5
+
+
+@dataclass(frozen=True)
+class DeliverySuggestion:
+    """A chosen delivery PLUS why it was chosen -- the "why" adaptive.py's
+    own docstring flagged as missing: suggest_next_delivery() (below) always
+    existed, but never recorded which weakness, if any, it was aiming at."""
+    delivery: Delivery
+    targeted_skill: Optional[str]   # None when no dimension is a clear-enough weakness yet (see SKILL_TIE_SPREAD)
+    reason: str
+
+
+def _shortlist_weights(shortlist: List[Tuple[float, float, Delivery]], ball: BallProperties,
+                        targeted: Optional[str]) -> List[float]:
+    """The random-choice weight for each (gap, rating, candidate) row in an
+    already-built shortlist. Split out from suggest_next_delivery_with_reason()
+    so the weighting rule itself -- closer overall difficulty always weighs
+    more (1/(1+gap)), PLUS extra weight for leaning on `targeted` when one is
+    given -- can be tested directly against known candidates, instead of only
+    inferred statistically from thousands of random picks."""
+    if targeted is None:
+        return [1.0 / (1.0 + gap) for gap, _, _ in shortlist]
+    weights = []
+    for gap, _, candidate in shortlist:
+        factors = _dimension_factors(candidate, ball, c.AIR_DENSITY_KG_M3, c.AIR_DYNAMIC_VISCOSITY_PA_S)
+        relevance = _dimension_relevance(factors)[targeted]
+        weights.append((1.0 / (1.0 + gap)) * (1.0 + WEAK_SKILL_BIAS * relevance))
+    return weights
+
+
+def suggest_next_delivery_with_reason(profile: PlayerProfile,
+                                       ball: BallProperties,
+                                       challenge_margin: float = 60.0,
+                                       pool_size: int = 40,
+                                       shortlist_size: int = 5,
+                                       speed_range_kmh: Tuple[float, float] = (70.0, 150.0),
+                                       rng: Optional[random.Random] = None) -> DeliverySuggestion:
     """
     Generate a pool of physically varied candidate deliveries within the
     machine's realistic speed/seam/spin envelope, rate each one with
-    delivery_difficulty_rating(), and pick from whichever candidates land
-    closest to the player's personal target zone -- their current rating
-    plus a small positive challenge_margin.
+    delivery_difficulty_rating(), and shortlist whichever candidates land
+    closest to the player's personal target zone -- their current OVERALL
+    rating plus a small positive challenge_margin. Overall difficulty stays
+    the primary filter on purpose: a delivery wildly harder or easier than
+    the player's current level shouldn't win just because it also happens to
+    stress their weakest skill.
 
-    The pick is a weighted random choice among the closest few candidates
-    (not always the single nearest one), on purpose: a real training session
-    should still vary pace/line/type ball to ball rather than converging on
-    one repeated "optimal" delivery, and always facing the exact same ball
-    would make this a much less useful training tool.
+    WITHIN that shortlist, candidates that lean more heavily on the player's
+    actual weakest `skill_ratings` dimension (profile.weakest_skill()) get
+    extra weight in the random pick (WEAK_SKILL_BIAS) -- so the machine
+    doesn't just keep the overall challenge level right, it deliberately
+    probes whichever specific skill the player has actually shown is
+    weakest, the way a coach choosing the next ball would. If the four
+    skill_ratings are too close together to call a real weakness
+    (SKILL_TIE_SPREAD), no dimension is targeted and the pick is exactly the
+    plain overall-difficulty weighting suggest_next_delivery() has always
+    used -- said so plainly in the returned reason, not silently guessed.
+
+    The pick is still a weighted random choice among the closest few
+    candidates (not always the single nearest one), on purpose: a real
+    training session should still vary pace/line/type ball to ball rather
+    than converging on one repeated "optimal" delivery.
     """
     rng = rng or random.Random()
     target_rating = profile.rating + challenge_margin
+
+    spread = max(profile.skill_ratings.values()) - min(profile.skill_ratings.values())
+    targeted = profile.weakest_skill() if spread >= SKILL_TIE_SPREAD else None
 
     scored = []
     for _ in range(pool_size):
@@ -384,9 +443,43 @@ def suggest_next_delivery(profile: PlayerProfile,
 
     scored.sort(key=lambda row: row[0])
     shortlist = scored[:shortlist_size]
-    weights = [1.0 / (1.0 + gap) for gap, _, _ in shortlist]
-    _, _, chosen = rng.choices(shortlist, weights=weights, k=1)[0]
-    return chosen
+    weights = _shortlist_weights(shortlist, ball, targeted)
+
+    _, chosen_rating, chosen = rng.choices(shortlist, weights=weights, k=1)[0]
+
+    if targeted is None:
+        reason = (
+            f"No dimension is clearly weaker than the others yet (skill ratings within "
+            f"{spread:.0f} points) -- picked for overall difficulty ({chosen_rating:.0f} vs a "
+            f"target of {target_rating:.0f}) only."
+        )
+    else:
+        chosen_factors = _dimension_factors(chosen, ball, c.AIR_DENSITY_KG_M3, c.AIR_DYNAMIC_VISCOSITY_PA_S)
+        chosen_relevance = _dimension_relevance(chosen_factors)[targeted]
+        reason = (
+            f"Targeting {targeted} ({profile.skill_ratings[targeted]:.0f}, your lowest-rated "
+            f"skill) -- this delivery's own difficulty is {chosen_relevance * 100:.0f}% driven by "
+            f"{targeted}, while still sitting close to your overall target ({chosen_rating:.0f} vs "
+            f"{target_rating:.0f})."
+        )
+
+    return DeliverySuggestion(chosen, targeted, reason)
+
+
+def suggest_next_delivery(profile: PlayerProfile,
+                           ball: BallProperties,
+                           challenge_margin: float = 60.0,
+                           pool_size: int = 40,
+                           shortlist_size: int = 5,
+                           speed_range_kmh: Tuple[float, float] = (70.0, 150.0),
+                           rng: Optional[random.Random] = None) -> Delivery:
+    """Unchanged public behaviour: just the Delivery, no reason attached.
+    See suggest_next_delivery_with_reason() for the same pick plus WHY it
+    was made -- this is now a thin wrapper around that, not a separate
+    implementation, so the two can never quietly drift apart."""
+    return suggest_next_delivery_with_reason(
+        profile, ball, challenge_margin, pool_size, shortlist_size, speed_range_kmh, rng,
+    ).delivery
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +493,22 @@ def next_delivery_after(profile: PlayerProfile,
                          **suggest_kwargs) -> Tuple[FacedRecord, Delivery]:
     """Log the outcome of the ball just faced, then immediately suggest the
     next one -- the single call a machine's control loop would make once
-    per delivery."""
+    per delivery. Unchanged behaviour; see next_delivery_after_with_reason()
+    for the same call plus WHY the next ball was chosen."""
     record = profile.record_outcome(faced_delivery, ball, outcome)
     next_ball = suggest_next_delivery(profile, ball, **suggest_kwargs)
     return record, next_ball
+
+
+def next_delivery_after_with_reason(profile: PlayerProfile,
+                                     ball: BallProperties,
+                                     faced_delivery: Delivery,
+                                     outcome: Union[str, float],
+                                     **suggest_kwargs) -> Tuple[FacedRecord, DeliverySuggestion]:
+    """Same as next_delivery_after(), but returns the full DeliverySuggestion
+    (delivery + targeted_skill + a human-readable reason) instead of a bare
+    Delivery -- what a UI wanting to show the player/coach WHY this ball was
+    picked should call."""
+    record = profile.record_outcome(faced_delivery, ball, outcome)
+    suggestion = suggest_next_delivery_with_reason(profile, ball, **suggest_kwargs)
+    return record, suggestion

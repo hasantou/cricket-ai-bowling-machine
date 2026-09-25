@@ -128,7 +128,34 @@ measurably raises the spin rating's movement over an otherwise-identical
 spinless one — a real, working signal, just not (yet) the dominant one for
 a genuine spinner.
 
-**4. Turn it into an actual scorecard.** `scorecard.py` is the bridge between
+**The next ball now has a reason, not just a target rating.**
+`suggest_next_delivery()` always existed but never recorded WHY it picked
+what it picked — every candidate was chosen purely by closeness to the
+player's overall target difficulty. `suggest_next_delivery_with_reason()`
+(and `next_delivery_after_with_reason()`, the record+suggest convenience
+call's equivalent) does the same overall-difficulty shortlisting first —
+that stays the primary filter, so a delivery wildly off the player's level
+never wins just for stressing a weak skill — then, WITHIN that shortlist,
+gives extra weight to candidates that lean on the player's actual weakest
+`skill_ratings` dimension (`profile.weakest_skill()`), and returns a
+`DeliverySuggestion(delivery, targeted_skill, reason)` explaining the pick
+in plain language, e.g. *"Targeting spin (870, your lowest-rated skill) —
+this delivery's own difficulty is 34% driven by spin, while still sitting
+close to your overall target (1120 vs 1130)."*
+
+Two honesty guards built in, not bolted on after: if the four skill
+ratings are too close together to call a real weakness yet
+(`SKILL_TIE_SPREAD`, default 15 points), it targets nothing and says so
+plainly rather than inventing a "weak spot" out of Elo noise; and
+`suggest_next_delivery()` itself is completely unchanged for every existing
+caller — it's now a one-line wrapper around the `_with_reason` version that
+discards the reason, and for a fresh player (no skill spread yet, which is
+every existing test's setup) it takes the exact same code path as before.
+
+**Not done yet, on purpose (see "Where to calibrate first"):** the reason
+string exists in the API now, but nothing in `app/app.py` displays it to a
+player or coach yet — that UI wiring is the natural next step, kept
+separate rather than bundled in here. `scorecard.py` is the bridge between
 a bowled ball and a real scorecard entry. It needs no sensor for legality —
 `classify_delivery_legality()` computes wide/no-ball directly from the
 delivery's own simulated trajectory, since the machine already knows exactly
