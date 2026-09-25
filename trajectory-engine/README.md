@@ -104,6 +104,30 @@ Outcomes are one of `"missed"`, `"beaten"`, `"edged"`, `"defended"`,
 raw float from 0 to 1 if you want a finer-grained scoring scheme — e.g. from
 an automated vision/sensor system instead of a person reporting it.
 
+**One rating isn't enough to know a player.** `PlayerProfile.rating` is the
+overall number `next_delivery_after` targets, unchanged from before — but a
+single number can't tell "solid against pace, weak against spin" apart from
+"moderate against everything," two very different batters it would otherwise
+show as the same figure. `PlayerProfile.skill_ratings` runs the exact same
+Elo update four more times, once per `adaptive.SKILL_DIMENSIONS` (pace,
+swing, seam, spin), each moved only in proportion to how much THAT delivery
+actually tested that dimension — a pure yorker leaves the spin rating
+untouched (checked directly: relevance is exactly 0.0, not just small);
+`profile.weakest_skill()` names whichever dimension is currently lowest.
+
+Told honestly, not oversold: a genuine leg-break still does **not** read as
+"mostly a spin test" here, even at spin near its physical ceiling —
+`magnus_lift_coefficient()` saturates at 0.35, and that ceiling is small
+next to a cricket ball's actual weight, so pace's contribution dominates
+almost every real delivery. That's not a tunable weight, it's what real
+Magnus lift on a cricket ball is like — spin's real difficulty for a batter
+is mostly about turn and dip off the pitch, a bounce phenomenon this
+in-flight-aerodynamics model doesn't represent at all (see "Where to
+calibrate first" below). What IS true and tested: a spinning ball
+measurably raises the spin rating's movement over an otherwise-identical
+spinless one — a real, working signal, just not (yet) the dominant one for
+a genuine spinner.
+
 **4. Turn it into an actual scorecard.** `scorecard.py` is the bridge between
 a bowled ball and a real scorecard entry. It needs no sensor for legality —
 `classify_delivery_legality()` computes wide/no-ball directly from the
@@ -281,3 +305,12 @@ number measured off your specific ball and machine — see
 The adaptive layer's *ranking* of which deliveries are harder than others
 stays sound even before calibration (it only needs relative difficulty to be
 right); the exact difficulty numbers will not be exact until these curves are.
+
+4. A bounce-aware spin difficulty. Not on the list above because it doesn't
+   exist yet, not because it's low priority: `skill_ratings["spin"]` (see
+   above) is honestly capped by how small real in-flight Magnus lift is on a
+   cricket ball — a genuine leg-spinner's actual difficulty (turn and dip off
+   the pitch) is a bounce phenomenon `crease_crossing.py` already models for
+   legality, but nothing yet feeds that into the difficulty rating. Building
+   that is the real fix for spin being under-weighted here, not adjusting
+   `_DIMENSION_WEIGHTS` — the ceiling is physical, not a tuning knob.

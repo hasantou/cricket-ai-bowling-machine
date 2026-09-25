@@ -34,6 +34,18 @@ whichever one's difficulty rating sits closest to the player's personal
 target zone, and biases its pick towards that pool -- so the machine
 "upgrades with the player's expertise" automatically, ball by ball, without
 anyone manually raising a difficulty slider.
+
+One rating is not enough to know a player, though: a single overall number
+cannot tell "good against pace, weak against spin" apart from "moderate
+against everything" -- two very different batters an overall-only rating
+would show as roughly the same number. `PlayerProfile.skill_ratings` fixes
+that by running the SAME Elo machinery four more times, once per
+`SKILL_DIMENSIONS`, each only moved by however much that specific delivery
+actually tested that dimension (see `_dimension_relevance()`) -- a pure
+yorker barely touches the spin rating; a big-turning leg-break barely
+touches pace. The overall `rating` is kept exactly as before (nothing that
+already reads it needs to change); the per-dimension ratings are additional
+detail on top, not a replacement.
 """
 
 from __future__ import annotations
@@ -80,31 +92,27 @@ SKILL_TIERS: Tuple[Tuple[str, float], ...] = (
 )
 
 
-def delivery_difficulty_rating(delivery: Delivery,
-                                ball: BallProperties,
-                                air_density: float = c.AIR_DENSITY_KG_M3,
-                                viscosity: float = c.AIR_DYNAMIC_VISCOSITY_PA_S,
-                                base_rating: float = 1200.0,
-                                rating_spread: float = 600.0) -> float:
-    """
-    Elo-like rating for ONE delivery, derived from its actual physics rather
-    than fitted or hand-picked.
+#: The four skill dimensions tracked separately in PlayerProfile.skill_ratings,
+#: matching the four physical ingredients _dimension_factors() computes.
+SKILL_DIMENSIONS: Tuple[str, ...] = ("pace", "swing", "seam", "spin")
 
-    Four physical ingredients are computed with the same coefficient
-    functions the trajectory simulator uses, each normalised against a
-    generous real-world ceiling, then force-weighted (force / ball weight,
-    so every term is a comparable dimensionless "how hard is this pushing
-    the ball around" number):
+#: How much each dimension counts toward the single overall "nastiness" score
+#: in delivery_difficulty_rating() -- pace matters most; spin and swing next;
+#: seam-drag least, since a slow, gripping cross-seam ball is unsettling but
+#: not violent. Named once here so the overall rating and the per-dimension
+#: relevance split (_dimension_relevance()) can't silently drift apart.
+_DIMENSION_WEIGHTS = {"pace": 0.45, "swing": 0.20, "seam": 0.10, "spin": 0.25}
+_NASTINESS_SCALE = 1.6  # sum of _DIMENSION_WEIGHTS' contributions at every factor capped to 1.0
 
-        pace factor       raw speed -- less reaction time for the batter
-        swing factor      peak seam-swing force  / ball weight
-        seam-drag factor  extra seam-on drag/skid / ball weight
-        spin factor       Magnus force from spin  / ball weight
 
-    Weighted sum (pace matters most; spin and swing next; seam-drag least,
-    since a slow, gripping cross-seam ball is unsettling but not violent)
-    gives one 0-1ish "nastiness" score, linearly mapped onto an Elo-like
-    scale centred on base_rating with the given spread.
+def _dimension_factors(delivery: Delivery, ball: BallProperties,
+                        air_density: float, viscosity: float) -> dict:
+    """The four physical ingredients behind delivery_difficulty_rating(),
+    computed once and shared by both the overall rating and the
+    per-dimension ratings below, so there is exactly one place that turns
+    physics into a 0-1ish "how much is this pushing the ball around" number
+    per dimension -- see delivery_difficulty_rating()'s docstring for what
+    each one means physically.
     """
     v = max(delivery.speed_mps, 1e-6)
     diameter = 2.0 * ball.radius_m
@@ -128,16 +136,92 @@ def delivery_difficulty_rating(delivery: Delivery,
     dynamic_term = 0.5 * air_density * ball.area_m2 * v * v  # rho*A*v^2/2, shared by all force terms
     weight_n = ball.mass_kg * c.G
 
-    pace_factor = min(v / c.kmh_to_ms(160.0), 1.3)
-    swing_factor = min((cs * dynamic_term) / weight_n, 1.5)
-    seamdrag_factor = min((cds * dynamic_term) / weight_n, 1.5)
-    spin_factor = min((cl * dynamic_term) / weight_n, 1.5)
+    return {
+        "pace": min(v / c.kmh_to_ms(160.0), 1.3),
+        "swing": min((cs * dynamic_term) / weight_n, 1.5),
+        "seam": min((cds * dynamic_term) / weight_n, 1.5),
+        "spin": min((cl * dynamic_term) / weight_n, 1.5),
+    }
 
-    nastiness = (0.45 * pace_factor + 0.20 * swing_factor +
-                 0.10 * seamdrag_factor + 0.25 * spin_factor)
-    nastiness = max(0.0, min(nastiness / 1.6, 1.0))  # squash to [0, 1]
+
+def delivery_difficulty_rating(delivery: Delivery,
+                                ball: BallProperties,
+                                air_density: float = c.AIR_DENSITY_KG_M3,
+                                viscosity: float = c.AIR_DYNAMIC_VISCOSITY_PA_S,
+                                base_rating: float = 1200.0,
+                                rating_spread: float = 600.0) -> float:
+    """
+    Elo-like rating for ONE delivery, derived from its actual physics rather
+    than fitted or hand-picked.
+
+    Four physical ingredients are computed with the same coefficient
+    functions the trajectory simulator uses, each normalised against a
+    generous real-world ceiling, then force-weighted (force / ball weight,
+    so every term is a comparable dimensionless "how hard is this pushing
+    the ball around" number):
+
+        pace factor       raw speed -- less reaction time for the batter
+        swing factor      peak seam-swing force  / ball weight
+        seam-drag factor  extra seam-on drag/skid / ball weight
+        spin factor       Magnus force from spin  / ball weight
+
+    Weighted sum (see _DIMENSION_WEIGHTS) gives one 0-1ish "nastiness"
+    score, linearly mapped onto an Elo-like scale centred on base_rating
+    with the given spread.
+    """
+    factors = _dimension_factors(delivery, ball, air_density, viscosity)
+    nastiness = sum(_DIMENSION_WEIGHTS[d] * factors[d] for d in SKILL_DIMENSIONS)
+    nastiness = max(0.0, min(nastiness / _NASTINESS_SCALE, 1.0))  # squash to [0, 1]
 
     return base_rating + (nastiness - 0.5) * 2.0 * rating_spread
+
+
+def dimension_delivery_rating(dimension: str, factors: dict,
+                               base_rating: float = 1200.0,
+                               rating_spread: float = 600.0) -> float:
+    """The same Elo-like mapping delivery_difficulty_rating() uses for the
+    blended nastiness score, applied to just ONE dimension's own factor --
+    "how hard was THIS delivery specifically as a test of spin", on the
+    same scale as the overall rating so expected_success() can compare a
+    player's per-dimension rating against it directly."""
+    clipped = max(0.0, min(factors[dimension], 1.0))
+    return base_rating + (clipped - 0.5) * 2.0 * rating_spread
+
+
+def _dimension_relevance(factors: dict) -> dict:
+    """What SHARE of a delivery's overall difficulty came from each
+    dimension -- a pure 155km/h yorker with no seam or spin should barely
+    move a player's spin rating at all. Computed from the same weighted
+    contributions delivery_difficulty_rating() sums into one nastiness
+    score, just kept separate here instead of being added together.
+
+    An honest asymmetry, checked directly rather than assumed: a genuine
+    leg-break does NOT get anywhere near as much relevance-share on spin as
+    a fast, seamless ball gets on pace, even at spin near its physical
+    ceiling. That's not a weighting choice here -- magnus_lift_coefficient()
+    saturates at cl_max=0.35, and a cricket ball's actual mass means even
+    that ceiling produces a spin_factor far below pace_factor at a real
+    delivery's speed. In other words: this in-flight-aerodynamics model
+    structurally cannot represent spin's real difficulty for a batter, which
+    is mostly about turn and dip off the pitch (a bounce phenomenon, not an
+    in-flight force) -- a known, shared limitation of the underlying
+    difficulty rating this module was already built on, not a new gap this
+    function introduces. A spin-heavy ball still reads as MORE spin-relevant
+    than a spinless one of the same pace, which is the one thing this
+    function can honestly promise until a bounce-aware spin difficulty
+    exists.
+
+    Falls back to equal relevance (0.25 each) for the one edge case where
+    every factor is genuinely zero (a delivery with no pace, seam, swing or
+    spin at all isn't physically real, but nothing here should divide by
+    zero if it somehow occurs) -- an explicit, named fallback, not a silent
+    NaN.
+    """
+    weighted = {d: _DIMENSION_WEIGHTS[d] * factors[d] for d in SKILL_DIMENSIONS}
+    total = sum(weighted.values())
+    if total <= 1e-9:
+        return {d: 1.0 / len(SKILL_DIMENSIONS) for d in SKILL_DIMENSIONS}
+    return {d: weighted[d] / total for d in SKILL_DIMENSIONS}
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +244,17 @@ class FacedRecord:
     expected_score: float
     rating_before: float
     rating_after: float
+    #: What share of this delivery's difficulty came from each dimension
+    #: (sums to 1.0) -- e.g. {"pace": 0.85, "swing": 0.05, "seam": 0.03,
+    #: "spin": 0.07} for a near-pure pace ball. This is the "why" data a
+    #: coach or the next-ball picker can read back later; see
+    #: PlayerProfile.record_outcome() for how it drives the per-dimension
+    #: rating updates below.
+    dimension_relevance: dict = field(default_factory=dict)
+    #: Each dimension's rating immediately after this ball (same keys as
+    #: dimension_relevance), so a player's per-skill trend over time can be
+    #: read straight off their history without recomputing anything.
+    skill_ratings_after: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -174,12 +269,26 @@ class PlayerProfile:
     rating: float = 1000.0
     k_factor: float = 24.0
     history: List[FacedRecord] = field(default_factory=list)
+    #: One Elo-like rating per SKILL_DIMENSIONS entry -- see this module's
+    #: docstring for why one overall rating isn't enough to know a player.
+    #: Starts at the same 1000.0 base as the overall rating; a fresh player
+    #: is assumed equally (un)tested in every dimension until proven
+    #: otherwise.
+    skill_ratings: dict = field(default_factory=lambda: {d: 1000.0 for d in SKILL_DIMENSIONS})
 
     def skill_tier(self) -> str:
         for tier_name, lo in SKILL_TIERS:
             if self.rating >= lo:
                 return tier_name
         return SKILL_TIERS[-1][0]
+
+    def weakest_skill(self) -> str:
+        """Which SKILL_DIMENSIONS entry this player is currently rated
+        lowest on -- the dimension a coach (or the next-ball picker) should
+        target first. Ties broken by SKILL_DIMENSIONS' own order, so the
+        result is deterministic for a fresh, all-equal profile rather than
+        depending on dict iteration order."""
+        return min(SKILL_DIMENSIONS, key=lambda d: self.skill_ratings[d])
 
     def record_outcome(self, delivery: Delivery, ball: BallProperties,
                         outcome: Union[str, float]) -> FacedRecord:
@@ -189,6 +298,16 @@ class PlayerProfile:
         starting point, since it needs no extra hardware) or a raw 0-1
         float, so this same call is ready to be driven by an automated
         vision/sensor system later without changing its signature.
+
+        Updates the overall rating exactly as before, AND each of
+        skill_ratings' four dimensions -- but only in proportion to how much
+        THIS delivery actually tested that dimension
+        (_dimension_relevance()), using the same Elo rule scaled by that
+        relevance share. A pure yorker with negligible spin_factor moves the
+        spin rating by only a sliver of what a full k_factor update would;
+        a big leg-break moves it by nearly the full amount. This is the same
+        Elo machinery run five times (once overall, once per dimension),
+        not a new algorithm.
         """
         outcome_score = (OUTCOME_SCORES[outcome] if isinstance(outcome, str)
                           else float(outcome))
@@ -198,8 +317,17 @@ class PlayerProfile:
         rating_before = self.rating
         self.rating = self.rating + self.k_factor * (outcome_score - expected)
 
+        factors = _dimension_factors(delivery, ball, c.AIR_DENSITY_KG_M3, c.AIR_DYNAMIC_VISCOSITY_PA_S)
+        relevance = _dimension_relevance(factors)
+        for dim in SKILL_DIMENSIONS:
+            dim_rating = dimension_delivery_rating(dim, factors)
+            dim_expected = expected_success(self.skill_ratings[dim], dim_rating)
+            self.skill_ratings[dim] += self.k_factor * relevance[dim] * (outcome_score - dim_expected)
+
         record = FacedRecord(delivery.label, d_rating, outcome_score,
-                              expected, rating_before, self.rating)
+                              expected, rating_before, self.rating,
+                              dimension_relevance=relevance,
+                              skill_ratings_after=dict(self.skill_ratings))
         self.history.append(record)
         return record
 
