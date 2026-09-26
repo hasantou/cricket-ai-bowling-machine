@@ -116,3 +116,104 @@ def test_plural_raises_when_no_clear_swing_exists():
     frames = _still_frames(150)
     with pytest.raises(ValueError, match="No clear delivery detected"):
         find_delivery_windows(frames, fps=FPS)
+
+
+# ---- check_windows_for_a_bowler: FLAGS a window, never drops one ----
+
+from delivery_segmentation import BOWLER_LOOKBACK_SEC, check_windows_for_a_bowler
+
+N_LANDMARKS_MULTI = 33
+
+
+def _multi_person(cx, cy, h, right_wrist=None, left_wrist=None):
+    """Same crude standing skeleton as test_bowler_analysis.py's `person()`,
+    duplicated here rather than imported so this test file doesn't take on
+    a cross-file test dependency for one small helper."""
+    lm = [(cx, cy, 1.0)] * N_LANDMARKS_MULTI
+    lm = list(lm)
+    lm[0] = (cx, cy - 0.5 * h, 1.0)
+    lm[11] = (cx - 0.10 * h, cy - 0.35 * h, 1.0)
+    lm[12] = (cx + 0.10 * h, cy - 0.35 * h, 1.0)
+    lm[15] = left_wrist or (cx - 0.15 * h, cy, 1.0)
+    lm[16] = right_wrist or (cx + 0.15 * h, cy, 1.0)
+    lm[23] = (cx - 0.05 * h, cy, 1.0)
+    lm[24] = (cx + 0.05 * h, cy, 1.0)
+    lm[27] = (cx - 0.05 * h, cy + 0.5 * h, 1.0)
+    lm[28] = (cx + 0.05 * h, cy + 0.5 * h, 1.0)
+    return lm
+
+
+def _real_run_up_and_release(n=90, release=80, h=0.30):
+    """A genuine bowler running in (hips travel a long way) and raising an
+    arm above the head at `release`, beside a stationary batter — the real
+    shape `identify_bowler()` looks for."""
+    frames = []
+    for i in range(n):
+        cx = 0.15 + 0.45 * i / (n - 1)
+        raised = None
+        if i == release:
+            raised = (cx + 0.10 * h, cy_top(cx, h), 1.0)
+        bowler = _multi_person(cx, 0.55, h, right_wrist=raised)
+        batter = _multi_person(0.85, 0.50, h)
+        frames.append([bowler, batter])
+    return frames
+
+
+def cy_top(cx, h):
+    return 0.55 - 0.5 * h - 0.12 * h  # well above the shoulder, a plausible release
+
+
+def _no_bowler_present(n=90, h=0.30):
+    """Two people standing around, neither running nor raising an arm --
+    what a replay's lead-in (if it shows anyone at all before cutting to
+    the moment) actually looks like: no genuine bowling action."""
+    return [[_multi_person(0.50, 0.55, h), _multi_person(0.85, 0.50, h)] for _ in range(n)]
+
+
+def test_a_window_with_a_real_preceding_run_up_is_flagged_bowler_seen_true():
+    lookback_frames = int(BOWLER_LOOKBACK_SEC * FPS)
+    frames_multi = _real_run_up_and_release(n=lookback_frames, release=lookback_frames - 10)
+    frames_multi += _no_bowler_present(n=10)  # the window itself, content irrelevant to this check
+    window = (lookback_frames, lookback_frames + 10)
+    results = check_windows_for_a_bowler([window], frames_multi, fps=FPS)
+    assert len(results) == 1
+    assert results[0].window == window
+    assert results[0].bowler_seen is True
+
+
+def test_a_window_with_no_preceding_bowler_is_flagged_bowler_seen_false():
+    lookback_frames = int(BOWLER_LOOKBACK_SEC * FPS)
+    frames_multi = _no_bowler_present(n=lookback_frames) + _no_bowler_present(n=10)
+    window = (lookback_frames, lookback_frames + 10)
+    results = check_windows_for_a_bowler([window], frames_multi, fps=FPS)
+    assert len(results) == 1
+    assert results[0].bowler_seen is False
+    assert "worth a quick look" in results[0].note.lower()
+
+
+def test_a_window_at_the_very_start_of_the_clip_is_flagged_unknown_not_false():
+    """No footage exists before frame 0 to check at all -- that is a
+    genuinely different state (unknown) from "checked and found nothing"."""
+    frames_multi = _no_bowler_present(n=10)
+    window = (0, 10)
+    results = check_windows_for_a_bowler([window], frames_multi, fps=FPS)
+    assert results[0].bowler_seen is None
+
+
+def test_every_window_given_is_returned_exactly_once_none_are_dropped():
+    """The whole point of this being advisory: the caller always gets ALL
+    windows back, each annotated -- nothing here unilaterally removes one."""
+    lookback_frames = int(BOWLER_LOOKBACK_SEC * FPS)
+    real_run_up = _real_run_up_and_release(n=lookback_frames, release=lookback_frames - 10)
+    real_window_content = _no_bowler_present(n=10)
+    replay_lead_in = _no_bowler_present(n=lookback_frames)
+    replay_window_content = _no_bowler_present(n=10)
+
+    frames_multi = real_run_up + real_window_content + replay_lead_in + replay_window_content
+    real_window = (lookback_frames, lookback_frames + 10)
+    replay_start = lookback_frames + 10 + lookback_frames
+    replay_window = (replay_start, replay_start + 10)
+
+    results = check_windows_for_a_bowler([real_window, replay_window], frames_multi, fps=FPS)
+    assert [r.window for r in results] == [real_window, replay_window]
+    assert [r.bowler_seen for r in results] == [True, False]

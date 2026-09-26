@@ -348,6 +348,34 @@ the batter's own already-tracked silhouette from the region before measuring cha
 step, not attempted yet. It also assumes a still camera, the same limitation `camera_motion.py`
 exists to remove for the batter-region selector, not yet ported here.
 
+## One replay counted as three deliveries — tried a fix, it can't be trusted alone
+
+A real, found-on-real-footage bug: a broadcast highlight clip often shows the SAME delivery more
+than once — normal speed, then a slow-motion replay, sometimes from a different camera angle — and
+each showing produces its own genuine-looking wrist-speed peak. `find_delivery_windows()` has no way
+to tell a second real ball apart from a replay of the first one; on the real wicket clip, one ball
+was counted as multiple deliveries.
+
+`check_windows_for_a_bowler()` (`delivery_segmentation.py`) was built as the fix: a real delivery is
+always preceded by a bowler's run-up (`bowler_analysis.py` already finds this); a replay that cuts
+straight to the moment never shows one. Tested on the real clip this was built for, honest result:
+the one window found there WAS flagged as having no bowler beforehand — but on inspection that
+almost certainly wasn't a replay at all. It's a highlight edit that starts right at the bowler's
+release, with the run-up itself trimmed out of the recorded footage by whoever cut the clip — normal
+editing, nothing to do with duplication. That looks IDENTICAL to this check as a genuine replay: no
+bowler visible before the swing, either way.
+
+Given that confirmed failure mode, this function deliberately **never drops a window itself** — it
+returns every window given, each annotated `bowler_seen: True / False / None` (None when there's no
+footage before it to even check), for a human to glance at. `bowler_seen=False` means "worth a quick
+look", not "definitely a duplicate". Silently auto-removing windows on this signal alone would risk
+throwing away real deliveries just as often as it catches replays — not safe until footage exists
+that actually shows bowlers' run-ups (most of what's been sent so far is edited highlight clips that
+don't), which would let this be validated against real duplicates and real singles separately.
+
+4 tests (synthetic, mutation-checked: forcing either branch to a fixed answer breaks exactly the
+tests built to catch that, confirmed by actually doing it and re-running).
+
 ## Closing the loop: turning an outcome estimate into an adaptive-rating update
 
 trajectory-engine's Elo-style difficulty engine (`adaptive.py`) has always accepted an automated
@@ -636,7 +664,8 @@ python cv-pipeline/demo_live_delivery_detection.py path/to/clip.mp4   # the live
 python3 -m pytest cv-pipeline/tests/ -v
 ```
 
-288 tests: the outcome-to-adaptive-rating bridge (`elo_outcome_bridge.py`, including a mutation
+292 tests: the delivery-segmentation replay-vs-real-ball flag (`check_windows_for_a_bowler`), the
+outcome-to-adaptive-rating bridge (`elo_outcome_bridge.py`, including a mutation
 check on its secondary-signal confidence guard), feature-extraction math (including `footwork_lead_seconds`) and
 delivery-segmentation windowing — single and multi-delivery, including
 that close-together swings merge into one delivery rather than
